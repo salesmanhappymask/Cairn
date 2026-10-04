@@ -1,91 +1,62 @@
 # Cairn
 
-Initial locomotion test for the CAIRN mobile rig.
+CAIRN locomotion test v2.
 
-## Repository files
+Repository:
 
-- `update`
-- `startup`
-- `locomotion_test`
+https://github.com/salesmanhappymask/Cairn
 
-There is no manifest and no separate version file.
+## Install
 
-## First installation
+Place these files in the repository root:
 
-Upload the contents of this ZIP to:
+- update
+- startup
+- locomotion_test
+- README.md
 
-`https://github.com/salesmanhappymask/Cairn/tree/main`
+On a fresh ComputerCraft computer, manually install only `update`.
 
-On a fresh ComputerCraft computer, manually download only the `update` program once.
+Then run:
 
-After that, run:
+update
 
-`update`
+Future updates also use:
 
-The updater is permanently configured to:
-
-`https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/`
-
-Each time it runs it:
-
-1. Downloads the newest `update` program.
-2. Runs that new copy.
-3. Downloads and validates the current Cairn program set.
-4. Deletes writable files on the computer HDD.
-5. Installs the fresh files.
-6. Removes temporary update files.
-
-Files on other mounted drives such as floppy disks are not erased.
+update
 
 ## Locomotion test
 
 Run:
 
-`locomotion_test`
+locomotion_test
 
-The test asks which absolute world direction the front of Cairn faces.
+Or specify Cairn's forward world direction:
 
-You may also specify it directly:
+locomotion_test north
+locomotion_test south
+locomotion_test east
+locomotion_test west
 
-`locomotion_test north`
-`locomotion_test south`
-`locomotion_test east`
-`locomotion_test west`
+The program now prints immediately when it starts and catches runtime errors so failures should remain visible on the terminal.
 
 Sequence:
 
-- Up 5
-- Forward 5
-- Backward 10
-- Forward 5
-- Left 5
-- Right 10
-- Left 5
-- Down 5
+Up 5
+Forward 5
+Backward 10
+Forward 5
+Left 5
+Right 10
+Left 5
+Down 5
 
-The test contains 50 one-block carriage movements and should finish at its starting position.
+The program performs one carriage movement per execution. If the computer reboots because it moved with the carriage, `startup` resumes the next step. If Redstone in Motion returns normally without rebooting the computer, the program launches the next step itself.
 
-Redstone in Motion uses absolute direction values:
+The carriage controller is rediscovered before every movement. The program examines all six direct faces and all peripherals exposed by wired modem networks.
 
-- 0 = down
-- 1 = up
-- 2 = north
-- 3 = south
-- 4 = west
-- 5 = east
+Each move is simulated first.
 
-Every move is simulated before execution. The carriage controller is called unanchored so it travels with Cairn.
+Run this to discard saved progress:
 
-Because a moved ComputerCraft computer restarts, progress is written before each physical movement. `startup` waits briefly for peripherals to reconnect, rediscovers the carriage controller, and resumes the next movement.
-
-Controller discovery checks all six directly attached faces and all peripheral names visible through wired modem networks.
-
-When the route finishes the program prints:
-
-`Test complete`
-
-The terminal is not cleared by the program afterward.
-
-If you need to abandon a saved test and begin again:
-
-`locomotion_test reset`
+locomotion_test reset

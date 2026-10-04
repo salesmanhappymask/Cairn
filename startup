@@ -1,5 +1,9 @@
-sleep(0.75)
+sleep(1)
 
 if fs.exists(".cairn_locomotion_test") then
-    shell.run("locomotion_test", "--resume")
+    local ok = shell.run("locomotion_test", "--resume")
+
+    if ok == false then
+        print("CAIRN locomotion resume failed")
+    end
 end
