@@ -1,53 +1,63 @@
 # Cairn
 
-Current repository release: v3
+Current release: v4
 
-## Update system
+Files:
 
-The repository does not use a manifest.
+- update
+- startup
+- locomotion_test
+- cairn_probe
+- README.md
 
-The release number is embedded directly in the `update` program.
+The updater has no manifest. Every managed program contains the Cairn release number. The updater verifies that every downloaded program belongs to the same release before deleting or replacing the installed files.
 
-On every update, the computer prints:
-
-- the currently installed Cairn release
-- the release number of the updater downloaded from GitHub
-- the release being applied
-- the final installed release
-
-The installed release is stored locally in:
-
-`.cairn_version`
-
-GitHub downloads include a changing cache-busting query so repeated update attempts are less likely to receive an older cached raw file.
-
-If GitHub is still propagating a change, running `update` again will clearly show which updater release was actually downloaded.
-
-## Fresh installation
-
-Manually place only `update` on a new ComputerCraft computer.
+If GitHub serves a mixture of old and new files, the update aborts and tells you which file is stale.
 
 Run:
 
-`update`
+update
 
-After that, all future updates also use:
+You should see:
 
-`update`
+CAIRN updater
+Installed release: v...
+Downloaded updater release: v4
+Applying CAIRN release v4
+All release files verified as v4
+CAIRN update complete
+Installed release: v4
 
-## Locomotion test
+For diagnostics run:
 
-Run:
+cairn_probe
 
-`locomotion_test`
+It does not move the carriage. It prints the installed release, program files, direct peripherals, network peripheral names, peripheral types, and methods.
+
+For the movement test run:
+
+locomotion_test
 
 or:
 
-`locomotion_test north`
-`locomotion_test south`
-`locomotion_test east`
-`locomotion_test west`
+locomotion_test north
+locomotion_test south
+locomotion_test east
+locomotion_test west
 
-Reset saved test progress with:
+The movement test now identifies itself as release v4 immediately when it starts.
 
-`locomotion_test reset`
+Sequence:
+
+Up 5
+Forward 5
+Backward 10
+Forward 5
+Left 5
+Right 10
+Left 5
+Down 5
+
+Reset saved progress with:
+
+locomotion_test reset

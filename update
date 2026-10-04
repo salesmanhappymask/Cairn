@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 3
+local RELEASE_VERSION = 4
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
 local TEMP_UPDATER = ".cairn_update_new"
 local STAGE_DIR = ".cairn_update_stage"
@@ -9,6 +9,7 @@ local VERSION_FILE = ".cairn_version"
 local FILES = {
     "startup",
     "locomotion_test",
+    "cairn_probe",
     "update"
 }
 
@@ -34,42 +35,44 @@ local function readText(filePath)
     end
 
     local h = fs.open(filePath, "r")
-
     if not h then
         return nil
     end
 
     local data = h.readAll()
     h.close()
-
     return data
 end
 
 local function writeText(filePath, data)
     local h = fs.open(filePath, "w")
-
     if not h then
         return false
     end
 
     h.write(data)
     h.close()
-
     return true
 end
 
 local function cacheToken()
     local id = 0
+    local day = 0
+    local time = 0
 
     if os.getComputerID then
         id = os.getComputerID()
     end
 
-    return tostring(id) .. "_" .. tostring(math.floor(os.clock() * 1000))
-end
+    if os.day then
+        day = os.day()
+    end
 
-local function remoteUrl(name)
-    return BASE_URL .. name .. "?cairn=" .. cacheToken()
+    if os.time then
+        time = os.time()
+    end
+
+    return tostring(id) .. "_" .. tostring(day) .. "_" .. tostring(time) .. "_" .. tostring(math.floor(os.clock() * 1000))
 end
 
 local function fetch(name)
@@ -77,7 +80,7 @@ local function fetch(name)
         return nil, "HTTP API unavailable"
     end
 
-    local url = remoteUrl(name)
+    local url = BASE_URL .. name .. "?cairn=" .. cacheToken()
     local ok, handle, err = pcall(http.get, url)
 
     if not ok then
@@ -108,23 +111,26 @@ local function validateLua(filePath)
     return true
 end
 
-local function extractVersion(data)
-    local value = string.match(
-        data,
-        "local%s+RELEASE_VERSION%s*=%s*(%d+)"
-    )
+local function extractRelease(name, data)
+    local value
+
+    if name == "update" then
+        value = string.match(
+            data,
+            "local%s+RELEASE_VERSION%s*=%s*(%d+)"
+        )
+    else
+        value = string.match(
+            data,
+            "local%s+CAIRN_RELEASE%s*=%s*(%d+)"
+        )
+    end
 
     if not value then
         return nil
     end
 
     return tonumber(value)
-end
-
-local function cleanStage()
-    if fs.exists(path(STAGE_DIR)) then
-        fs.delete(path(STAGE_DIR))
-    end
 end
 
 local function installedVersion()
@@ -143,6 +149,12 @@ local function installedVersion()
     return value
 end
 
+local function cleanStage()
+    if fs.exists(path(STAGE_DIR)) then
+        fs.delete(path(STAGE_DIR))
+    end
+end
+
 local function bootstrap()
     print("CAIRN updater")
     print("Installed release: v" .. installedVersion())
@@ -156,14 +168,14 @@ local function bootstrap()
         return
     end
 
-    local remoteVersion = extractVersion(data)
+    local remoteVersion = extractRelease("update", data)
 
-    if remoteVersion then
-        print("Downloaded updater release: v" .. remoteVersion)
-    else
+    if not remoteVersion then
         print("Downloaded updater has no readable release number")
         return
     end
+
+    print("Downloaded updater release: v" .. remoteVersion)
 
     local tempPath = path(TEMP_UPDATER)
 
@@ -176,9 +188,9 @@ local function bootstrap()
         return
     end
 
-    local ok, syntaxErr = validateLua(tempPath)
+    local valid, syntaxErr = validateLua(tempPath)
 
-    if not ok then
+    if not valid then
         fs.delete(tempPath)
         print("Downloaded updater failed validation")
         print(syntaxErr or "")
@@ -217,21 +229,21 @@ local function apply()
             return
         end
 
-        if name == "update" then
-            local downloadedVersion = extractVersion(data)
+        local fileRelease = extractRelease(name, data)
 
-            if downloadedVersion ~= RELEASE_VERSION then
-                cleanStage()
-                print("Release consistency check failed")
-                print(
-                    "Updater expected v" ..
-                    RELEASE_VERSION ..
-                    " but received v" ..
-                    tostring(downloadedVersion)
-                )
-                print("GitHub may still be updating. Try again shortly.")
-                return
-            end
+        if fileRelease ~= RELEASE_VERSION then
+            cleanStage()
+            print("Release consistency check failed")
+            print(
+                name ..
+                " is v" ..
+                tostring(fileRelease) ..
+                ", expected v" ..
+                RELEASE_VERSION
+            )
+            print("GitHub may still be propagating the new release.")
+            print("Wait briefly and run update again.")
+            return
         end
 
         local staged = fs.combine(path(STAGE_DIR), name)
@@ -242,9 +254,9 @@ local function apply()
             return
         end
 
-        local ok, syntaxErr = validateLua(staged)
+        local valid, syntaxErr = validateLua(staged)
 
-        if not ok then
+        if not valid then
             cleanStage()
             print("Validation failed: " .. name)
             print(syntaxErr or "")
@@ -252,7 +264,7 @@ local function apply()
         end
     end
 
-    print("Downloads verified")
+    print("All release files verified as v" .. RELEASE_VERSION)
     print("Clearing old installation...")
 
     local preserve = {
