@@ -1,42 +1,86 @@
 # Cairn
 
-Current release: v7
+Current release: v8
 
-This release uses only the ComputerCraft bundled redstone API.
+Cairn locomotion now uses ordinary ComputerCraft analog redstone output.
 
-There are no peripheral calls and no Redstone in Motion peripheral discovery.
+No bundled-redstone API is used.
+No Redstone in Motion peripheral API is used.
+No peripheral discovery is used.
 
-The ComputerCraft 1.63 jar used by this installation contains:
+The computer outputs a redstone strength from its back.
+A MineFactory Reloaded Programmable RedNet Controller translates that strength into a RedNet color.
 
-redstone.setBundledOutput(side, value)
-redstone.getBundledOutput(side)
-redstone.getBundledInput(side)
-redstone.testBundledInput(side, mask)
+## Command bus
 
-## Wiring
+0 = Off
+1 = Up
+2 = Forward / North
+3 = Right / East
+4 = Left / West
+5 = Back / South
+6 = Down
 
-Bundled RedNet cable leaves the back of the computer.
+The PRC should translate these commands to:
 
-White = Up
-Orange = Forward / North
-Magenta = Right / East
-Light Blue = Left / West
-Yellow = Back / South
-Lime = Down
+1 -> White
+2 -> Orange
+3 -> Magenta
+4 -> Light Blue
+5 -> Yellow
+6 -> Lime
+
+## PRC setup
+
+Feed the computer's back-side ordinary redstone output into the PRC.
+
+Configure six PRC circuits so each circuit tests the incoming redstone strength for one exact value and outputs a full-strength RedNet signal on the matching color.
+
+Circuit 1:
+Input equals 1
+Output White
+
+Circuit 2:
+Input equals 2
+Output Orange
+
+Circuit 3:
+Input equals 3
+Output Magenta
+
+Circuit 4:
+Input equals 4
+Output Light Blue
+
+Circuit 5:
+Input equals 5
+Output Yellow
+
+Circuit 6:
+Input equals 6
+Output Lime
+
+The PRC's RedNet side then connects to the colored RedNet network around the carriage engines.
 
 ## First test
 
-Before running the full locomotion route, run:
+Run:
 
 drive_test
 
-The program prints before it accesses redstone.
+Choose one of:
 
-Choose a color and press Enter. It will energize only that bundled channel.
+up
+forward
+right
+left
+back
+down
+off
 
-If the carriage moves, the computer may reboot immediately.
+The program prints the selected signal strength and waits for Enter before energizing it.
 
-If no movement/reboot occurs, the program waits three seconds, clears the channel, and reports that no reboot occurred.
+Use a redstone lamp or redstone-strength indicator on the computer output while testing if desired.
 
 ## Full route
 
@@ -57,11 +101,9 @@ Down 5
 
 Total: 50 one-block moves.
 
-Run:
+To abandon a stored test:
 
 locomotion_test reset
-
-to clear saved progress.
 
 ## Updating
 
@@ -77,4 +119,4 @@ Then run:
 
 update
 
-The updater should report release v7.
+The updater should report release v8.

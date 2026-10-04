@@ -1,17 +1,17 @@
-local CAIRN_RELEASE = 7
+local CAIRN_RELEASE = 8
 local args = {...}
 
 local DRIVE_SIDE = "back"
 local STATE_FILE = ".cairn_locomotion_test"
 local STATE_VERSION = 1
 
-local channels = {
-    up = colors.white,
-    forward = colors.orange,
-    right = colors.magenta,
-    left = colors.lightBlue,
-    back = colors.yellow,
-    down = colors.lime
+local signals = {
+    up = 1,
+    forward = 2,
+    right = 3,
+    left = 4,
+    back = 5,
+    down = 6
 }
 
 local plan = {
@@ -27,7 +27,7 @@ local plan = {
 
 print("CAIRN locomotion test")
 print("Release: v" .. CAIRN_RELEASE)
-print("Bundled drive only")
+print("Analog redstone drive")
 print("")
 
 if not redstone then
@@ -35,8 +35,8 @@ if not redstone then
     return
 end
 
-if type(redstone.setBundledOutput) ~= "function" then
-    print("ERROR: redstone.setBundledOutput is unavailable")
+if type(redstone.setAnalogOutput) ~= "function" then
+    print("ERROR: redstone.setAnalogOutput is unavailable")
     return
 end
 
@@ -70,7 +70,7 @@ local function loadState()
 end
 
 local function clearDrive()
-    redstone.setBundledOutput(DRIVE_SIDE, 0)
+    redstone.setAnalogOutput(DRIVE_SIDE, 0)
 end
 
 local function buildMoves()
@@ -94,7 +94,7 @@ if args[1] == "reset" then
     local ok, err = pcall(clearDrive)
 
     if not ok then
-        print("WARNING: could not clear bundled output")
+        print("WARNING: could not clear analog output")
         print(tostring(err))
     end
 
@@ -106,17 +106,17 @@ if args[1] == "reset" then
     return
 end
 
-print("Checking bundled output...")
+print("Checking analog output...")
 
 local clearOk, clearErr = pcall(clearDrive)
 
 if not clearOk then
-    print("ERROR clearing bundled output:")
+    print("ERROR clearing analog output:")
     print(tostring(clearErr))
     return
 end
 
-print("Bundled output ready")
+print("Analog output ready")
 print("")
 
 local state = loadState()
@@ -169,12 +169,12 @@ if state.step > #moves then
 end
 
 local move = moves[state.step]
-local channel = channels[move.direction]
+local strength = signals[move.direction]
 
 print("Step " .. state.step .. "/" .. #moves)
 print(move.label)
 print("Direction: " .. move.direction)
-print("Bundled value: " .. tostring(channel))
+print("Redstone strength: " .. strength)
 print("")
 
 state.phase = "armed"
@@ -184,19 +184,19 @@ if not saveState(state) then
     return
 end
 
-print("Energizing movement channel...")
+print("Energizing drive command...")
 
 local moveOk, moveErr = pcall(
-    redstone.setBundledOutput,
+    redstone.setAnalogOutput,
     DRIVE_SIDE,
-    channel
+    strength
 )
 
 if not moveOk then
     state.phase = "idle"
     saveState(state)
 
-    print("ERROR setting bundled output:")
+    print("ERROR setting analog output:")
     print(tostring(moveErr))
     return
 end

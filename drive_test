@@ -1,16 +1,16 @@
-local CAIRN_RELEASE = 7
+local CAIRN_RELEASE = 8
 local DRIVE_SIDE = "back"
 
-local channels = {
-    white = colors.white,
-    orange = colors.orange,
-    magenta = colors.magenta,
-    lightblue = colors.lightBlue,
-    yellow = colors.yellow,
-    lime = colors.lime
+local signals = {
+    up = 1,
+    forward = 2,
+    right = 3,
+    left = 4,
+    back = 5,
+    down = 6
 }
 
-print("CAIRN bundled drive test")
+print("CAIRN analog drive test")
 print("Release: v" .. CAIRN_RELEASE)
 print("Output side: " .. DRIVE_SIDE)
 print("")
@@ -20,81 +20,81 @@ if not redstone then
     return
 end
 
-if type(redstone.setBundledOutput) ~= "function" then
-    print("ERROR: setBundledOutput is unavailable")
+if type(redstone.setAnalogOutput) ~= "function" then
+    print("ERROR: redstone.setAnalogOutput is unavailable")
     return
 end
 
-if type(redstone.getBundledOutput) ~= "function" then
-    print("ERROR: getBundledOutput is unavailable")
+if type(redstone.getAnalogOutput) ~= "function" then
+    print("ERROR: redstone.getAnalogOutput is unavailable")
     return
 end
 
-print("Bundled redstone API detected")
+print("Analog redstone API detected")
 
-local ok, value = pcall(redstone.getBundledOutput, DRIVE_SIDE)
+local ok, value = pcall(redstone.getAnalogOutput, DRIVE_SIDE)
 
 if not ok then
-    print("ERROR reading bundled output:")
+    print("ERROR reading analog output:")
     print(tostring(value))
     return
 end
 
-print("Current bundled output: " .. tostring(value))
+print("Current output strength: " .. tostring(value))
 print("")
-print("Choose one channel:")
-print("white     = up")
-print("orange    = forward / north")
-print("magenta   = right / east")
-print("lightblue = left / west")
-print("yellow    = back / south")
-print("lime      = down")
-print("off       = clear bus")
+print("Choose one direction:")
+print("up       = strength 1")
+print("forward  = strength 2")
+print("right    = strength 3")
+print("left     = strength 4")
+print("back     = strength 5")
+print("down     = strength 6")
+print("off      = strength 0")
 write("> ")
 
 local choice = string.lower(read() or "")
 
 if choice == "off" then
-    local clearOk, clearErr = pcall(redstone.setBundledOutput, DRIVE_SIDE, 0)
+    local clearOk, clearErr = pcall(redstone.setAnalogOutput, DRIVE_SIDE, 0)
 
     if not clearOk then
-        print("ERROR clearing bundled output:")
+        print("ERROR clearing analog output:")
         print(tostring(clearErr))
         return
     end
 
-    print("Bundled output cleared")
+    print("Analog output cleared")
     return
 end
 
-local channel = channels[choice]
+local strength = signals[choice]
 
-if not channel then
-    print("Unknown channel")
+if not strength then
+    print("Unknown direction")
     return
 end
 
 print("")
-print("Selected value: " .. tostring(channel))
-print("Press Enter to energize the channel")
+print("Selected strength: " .. strength)
+print("Press Enter to energize the output")
 read()
 
-local clearOk, clearErr = pcall(redstone.setBundledOutput, DRIVE_SIDE, 0)
+local clearOk, clearErr = pcall(redstone.setAnalogOutput, DRIVE_SIDE, 0)
 
 if not clearOk then
-    print("ERROR clearing bus before test:")
+    print("ERROR clearing output before test:")
     print(tostring(clearErr))
     return
 end
 
 sleep(0.25)
 
-print("Energizing " .. choice .. "...")
+print("Outputting strength " .. strength .. "...")
 
-local setOk, setErr = pcall(redstone.setBundledOutput, DRIVE_SIDE, channel)
+local setOk, setErr = pcall(redstone.setAnalogOutput, DRIVE_SIDE, strength)
 
 if not setOk then
-    print("ERROR setting bundled output:")
+    print("ERROR setting analog output:")
     print(tostring(setErr))
     return
 end
@@ -104,6 +104,6 @@ print("If the carriage moves, this computer may reboot now")
 
 sleep(3)
 
-redstone.setBundledOutput(DRIVE_SIDE, 0)
+redstone.setAnalogOutput(DRIVE_SIDE, 0)
 print("No reboot occurred")
 print("Signal cleared")
