@@ -1,18 +1,60 @@
-local CAIRN_RELEASE = 9
+local CAIRN_RELEASE = 10
 
 local LEFT_SIDE = "left"
 local RIGHT_SIDE = "right"
 local STATE_FILE = ".cairn_drive_state"
-local STATE_VERSION = 1
+local STATE_VERSION = 2
 local REBOOT_TIMEOUT = 3
 
 local moves = {
-    forward = {side = LEFT_SIDE, strength = 1, dx = 0, dy = 0, dz = -1},
-    right = {side = LEFT_SIDE, strength = 2, dx = 1, dy = 0, dz = 0},
-    left = {side = LEFT_SIDE, strength = 3, dx = -1, dy = 0, dz = 0},
-    back = {side = RIGHT_SIDE, strength = 1, dx = 0, dy = 0, dz = 1},
-    up = {side = RIGHT_SIDE, strength = 2, dx = 0, dy = 1, dz = 0},
-    down = {side = RIGHT_SIDE, strength = 3, dx = 0, dy = -1, dz = 0}
+    forward = {
+        side = LEFT_SIDE,
+        color = colors.orange,
+        colorName = "orange",
+        dx = 0,
+        dy = 0,
+        dz = -1
+    },
+    right = {
+        side = LEFT_SIDE,
+        color = colors.magenta,
+        colorName = "magenta",
+        dx = 1,
+        dy = 0,
+        dz = 0
+    },
+    left = {
+        side = LEFT_SIDE,
+        color = colors.lightBlue,
+        colorName = "light blue",
+        dx = -1,
+        dy = 0,
+        dz = 0
+    },
+    back = {
+        side = RIGHT_SIDE,
+        color = colors.yellow,
+        colorName = "yellow",
+        dx = 0,
+        dy = 0,
+        dz = 1
+    },
+    up = {
+        side = RIGHT_SIDE,
+        color = colors.lime,
+        colorName = "lime",
+        dx = 0,
+        dy = 1,
+        dz = 0
+    },
+    down = {
+        side = RIGHT_SIDE,
+        color = colors.pink,
+        colorName = "pink",
+        dx = 0,
+        dy = -1,
+        dz = 0
+    }
 }
 
 local sequences = {
@@ -79,12 +121,16 @@ local function loadState()
         return defaultState()
     end
 
+    if state.version ~= STATE_VERSION then
+        return defaultState()
+    end
+
     return state
 end
 
 local function clearOutputs()
-    redstone.setAnalogOutput(LEFT_SIDE, 0)
-    redstone.setAnalogOutput(RIGHT_SIDE, 0)
+    redstone.setBundledOutput(LEFT_SIDE, 0)
+    redstone.setBundledOutput(RIGHT_SIDE, 0)
 end
 
 local function atIdle(state)
@@ -162,18 +208,34 @@ local function issueMove(state, direction)
     local move = moves[direction]
 
     if not move then
-        print("Unknown movement: " .. tostring(direction))
         return false
     end
 
-    clearOutputs()
+    local clearOk, clearErr = pcall(clearOutputs)
+
+    if not clearOk then
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("CAIRN LOCOMOTION")
+        print("")
+        print("Could not clear bundled outputs")
+        print(tostring(clearErr))
+        sleep(2)
+        return false
+    end
+
     sleep(0.1)
 
     state.phase = "armed"
     state.direction = direction
 
     if not saveState(state) then
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("CAIRN LOCOMOTION")
+        print("")
         print("Could not save movement state")
+        sleep(2)
         return false
     end
 
@@ -187,24 +249,25 @@ local function issueMove(state, direction)
     print("X: " .. state.x .. "  Y: " .. state.y .. "  Z: " .. state.z)
     print("")
     print("Moving: " .. string.upper(direction))
-    print("Output: " .. move.side .. " / strength " .. move.strength)
+    print("Computer side: " .. move.side)
+    print("RedNet color: " .. move.colorName)
     print("")
     print("Waiting for carriage movement...")
 
     local ok, err = pcall(
-        redstone.setAnalogOutput,
+        redstone.setBundledOutput,
         move.side,
-        move.strength
+        move.color
     )
 
     if not ok then
         state.phase = "idle"
         state.direction = nil
         saveState(state)
-        clearOutputs()
+        pcall(clearOutputs)
 
         print("")
-        print("Redstone output failed")
+        print("Bundled output failed")
         print(tostring(err))
         sleep(2)
         return false
@@ -212,7 +275,7 @@ local function issueMove(state, direction)
 
     sleep(REBOOT_TIMEOUT)
 
-    clearOutputs()
+    pcall(clearOutputs)
 
     state.phase = "idle"
     state.direction = nil
@@ -294,9 +357,9 @@ local function showMenu(state)
     print("")
 
     if atIdle(state) then
-        print("Status: IDLE POSITION")
+        print("Status: IDLE")
     else
-        print("Status: OFFSET FROM IDLE")
+        print("Status: RETURNING TO IDLE")
     end
 
     print("")
@@ -307,12 +370,6 @@ local function showMenu(state)
     print("2 - Full movement test")
     print("    Up 5, Forward 10, Left 10,")
     print("    Back 10, Right 10, Down 5")
-
-    if not atIdle(state) then
-        print("")
-        print("R - Return to idle position")
-    end
-
     print("")
     print("Q - Exit")
     print("")
@@ -321,10 +378,10 @@ local function showMenu(state)
     return string.lower(read() or "")
 end
 
-if not redstone or type(redstone.setAnalogOutput) ~= "function" then
+if not redstone or type(redstone.setBundledOutput) ~= "function" then
     print("CAIRN LOCOMOTION")
     print("")
-    print("Analog redstone API unavailable")
+    print("Bundled redstone API unavailable")
     return
 end
 
@@ -333,20 +390,12 @@ local ok, err = pcall(clearOutputs)
 if not ok then
     print("CAIRN LOCOMOTION")
     print("")
-    print("Could not clear drive outputs")
+    print("Could not clear bundled drive outputs")
     print(tostring(err))
     return
 end
 
 local state = loadState()
-
-if state.version ~= STATE_VERSION then
-    print("CAIRN LOCOMOTION")
-    print("")
-    print("Drive state version mismatch")
-    print("Delete " .. STATE_FILE .. " to reset")
-    return
-end
 
 if state.phase == "armed" then
     finishArmedMove(state)
@@ -367,6 +416,11 @@ while true do
                 return
             end
         end
+    elseif not atIdle(state) then
+        state.active = "return"
+        state.pending = nil
+        state.step = 1
+        saveState(state)
     else
         local choice = showMenu(state)
 
@@ -374,11 +428,6 @@ while true do
             startSequence(state, 1)
         elseif choice == "2" then
             startSequence(state, 2)
-        elseif choice == "r" and not atIdle(state) then
-            state.active = "return"
-            state.pending = nil
-            state.step = 1
-            saveState(state)
         elseif choice == "q" then
             clearOutputs()
             term.clear()

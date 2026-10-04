@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 9
+local RELEASE_VERSION = 10
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
 local TEMP_UPDATER = ".cairn_update_new"
 local STAGE_DIR = ".cairn_update_stage"
