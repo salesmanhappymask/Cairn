@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 10
+local CAIRN_RELEASE = 11
 
 local LEFT_SIDE = "left"
 local RIGHT_SIDE = "right"
@@ -7,13 +7,13 @@ local STATE_VERSION = 2
 local REBOOT_TIMEOUT = 3
 
 local moves = {
-    forward = {
+    back = {
         side = LEFT_SIDE,
         color = colors.orange,
         colorName = "orange",
         dx = 0,
         dy = 0,
-        dz = -1
+        dz = 1
     },
     right = {
         side = LEFT_SIDE,
@@ -31,13 +31,13 @@ local moves = {
         dy = 0,
         dz = 0
     },
-    back = {
-        side = RIGHT_SIDE,
+    down = {
+        side = LEFT_SIDE,
         color = colors.yellow,
         colorName = "yellow",
         dx = 0,
-        dy = 0,
-        dz = 1
+        dy = -1,
+        dz = 0
     },
     up = {
         side = RIGHT_SIDE,
@@ -47,13 +47,13 @@ local moves = {
         dy = 1,
         dz = 0
     },
-    down = {
+    forward = {
         side = RIGHT_SIDE,
         color = colors.pink,
         colorName = "pink",
         dx = 0,
-        dy = -1,
-        dz = 0
+        dy = 0,
+        dz = -1
     }
 }
 

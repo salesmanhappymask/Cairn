@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 10
+local CAIRN_RELEASE = 11
 
 if redstone and redstone.setBundledOutput then
     pcall(redstone.setBundledOutput, "left", 0)
