@@ -1,0 +1,109 @@
+local CAIRN_RELEASE = 7
+local DRIVE_SIDE = "back"
+
+local channels = {
+    white = colors.white,
+    orange = colors.orange,
+    magenta = colors.magenta,
+    lightblue = colors.lightBlue,
+    yellow = colors.yellow,
+    lime = colors.lime
+}
+
+print("CAIRN bundled drive test")
+print("Release: v" .. CAIRN_RELEASE)
+print("Output side: " .. DRIVE_SIDE)
+print("")
+
+if not redstone then
+    print("ERROR: redstone API is unavailable")
+    return
+end
+
+if type(redstone.setBundledOutput) ~= "function" then
+    print("ERROR: setBundledOutput is unavailable")
+    return
+end
+
+if type(redstone.getBundledOutput) ~= "function" then
+    print("ERROR: getBundledOutput is unavailable")
+    return
+end
+
+print("Bundled redstone API detected")
+
+local ok, value = pcall(redstone.getBundledOutput, DRIVE_SIDE)
+
+if not ok then
+    print("ERROR reading bundled output:")
+    print(tostring(value))
+    return
+end
+
+print("Current bundled output: " .. tostring(value))
+print("")
+print("Choose one channel:")
+print("white     = up")
+print("orange    = forward / north")
+print("magenta   = right / east")
+print("lightblue = left / west")
+print("yellow    = back / south")
+print("lime      = down")
+print("off       = clear bus")
+write("> ")
+
+local choice = string.lower(read() or "")
+
+if choice == "off" then
+    local clearOk, clearErr = pcall(redstone.setBundledOutput, DRIVE_SIDE, 0)
+
+    if not clearOk then
+        print("ERROR clearing bundled output:")
+        print(tostring(clearErr))
+        return
+    end
+
+    print("Bundled output cleared")
+    return
+end
+
+local channel = channels[choice]
+
+if not channel then
+    print("Unknown channel")
+    return
+end
+
+print("")
+print("Selected value: " .. tostring(channel))
+print("Press Enter to energize the channel")
+read()
+
+local clearOk, clearErr = pcall(redstone.setBundledOutput, DRIVE_SIDE, 0)
+
+if not clearOk then
+    print("ERROR clearing bus before test:")
+    print(tostring(clearErr))
+    return
+end
+
+sleep(0.25)
+
+print("Energizing " .. choice .. "...")
+
+local setOk, setErr = pcall(redstone.setBundledOutput, DRIVE_SIDE, channel)
+
+if not setOk then
+    print("ERROR setting bundled output:")
+    print(tostring(setErr))
+    return
+end
+
+print("Signal set successfully")
+print("If the carriage moves, this computer may reboot now")
+
+sleep(3)
+
+redstone.setBundledOutput(DRIVE_SIDE, 0)
+print("No reboot occurred")
+print("Signal cleared")

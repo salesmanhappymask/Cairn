@@ -1,82 +1,80 @@
 # Cairn
 
-Current release: v6
+Current release: v7
 
-CAIRN locomotion now uses bundled redstone through MineFactory Reloaded RedNet cable rather than the Redstone in Motion ComputerCraft peripheral.
+This release uses only the ComputerCraft bundled redstone API.
 
-## Drive bus
+There are no peripheral calls and no Redstone in Motion peripheral discovery.
 
-The bundled cable is attached to the back of the computer.
+The ComputerCraft 1.63 jar used by this installation contains:
 
-Movement channels:
+redstone.setBundledOutput(side, value)
+redstone.getBundledOutput(side)
+redstone.getBundledInput(side)
+redstone.testBundledInput(side, mask)
 
-- White = Up
-- Orange = Forward / North
-- Magenta = Right / East
-- Light Blue = Left / West
-- Yellow = Back / South
-- Lime = Down
+## Wiring
 
-Only one propulsion channel is ever energized at a time.
+Bundled RedNet cable leaves the back of the computer.
 
-## Test route
+White = Up
+Orange = Forward / North
+Magenta = Right / East
+Light Blue = Left / West
+Yellow = Back / South
+Lime = Down
+
+## First test
+
+Before running the full locomotion route, run:
+
+drive_test
+
+The program prints before it accesses redstone.
+
+Choose a color and press Enter. It will energize only that bundled channel.
+
+If the carriage moves, the computer may reboot immediately.
+
+If no movement/reboot occurs, the program waits three seconds, clears the channel, and reports that no reboot occurred.
+
+## Full route
 
 Run:
 
 locomotion_test
 
-The test performs:
+Route:
 
-- Up 5
-- Forward 5
-- Backward 10
-- Forward 5
-- Left 5
-- Right 10
-- Left 5
-- Down 5
+Up 5
+Forward 5
+Backward 10
+Forward 5
+Left 5
+Right 10
+Left 5
+Down 5
 
-Total movement: 50 blocks.
-
-The route returns Cairn to its starting position.
-
-Before every move, the program:
-
-1. Clears all bundled propulsion output.
-2. Saves the movement as armed.
-3. Energizes exactly one bundled color.
-4. Expects Redstone in Motion to move the carriage and reboot the computer.
-
-On reboot, startup:
-
-1. Immediately clears the bundled output on the back.
-2. Marks the armed movement complete.
-3. Waits one second.
-4. Resumes the next step.
-
-If no reboot occurs within three seconds, the program clears the drive output and leaves the current movement pending rather than advancing.
-
-When all 50 movements are complete the terminal prints:
-
-Test complete
-
-The terminal is not cleared.
-
-To abandon a saved test:
-
-locomotion_test reset
-
-## Updating
-
-Upload these repository files:
-
-- update
-- startup
-- locomotion_test
-- README.md
+Total: 50 one-block moves.
 
 Run:
 
+locomotion_test reset
+
+to clear saved progress.
+
+## Updating
+
+Upload:
+
+update
+startup
+drive_test
+locomotion_test
+README.md
+
+Then run:
+
 update
 
-The updater should report release v6 before installing.
+The updater should report release v7.

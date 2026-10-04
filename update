@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 6
+local RELEASE_VERSION = 7
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
 local TEMP_UPDATER = ".cairn_update_new"
 local STAGE_DIR = ".cairn_update_stage"
@@ -9,6 +9,7 @@ local VERSION_FILE = ".cairn_version"
 local FILES = {
     "startup",
     "locomotion_test",
+    "drive_test",
     "update"
 }
 
@@ -54,7 +55,7 @@ local function writeText(filePath, data)
     return true
 end
 
-local function cacheToken()
+local function token()
     return tostring(os.getComputerID()) .. "_" .. tostring(math.floor(os.clock() * 1000))
 end
 
@@ -65,7 +66,7 @@ local function fetch(name)
 
     local ok, handle, err = pcall(
         http.get,
-        BASE_URL .. name .. "?cairn=" .. cacheToken()
+        BASE_URL .. name .. "?cairn=" .. token()
     )
 
     if not ok then
@@ -86,7 +87,7 @@ local function fetch(name)
     return data
 end
 
-local function validateLua(filePath)
+local function validate(filePath)
     local fn, err = loadfile(filePath)
 
     if not fn then
@@ -130,7 +131,7 @@ local function installedVersion()
     return data
 end
 
-local function cleanStage()
+local function clearStage()
     if fs.exists(fullPath(STAGE_DIR)) then
         fs.delete(fullPath(STAGE_DIR))
     end
@@ -149,14 +150,14 @@ local function bootstrap()
         return
     end
 
-    local remoteRelease = extractRelease("update", data)
+    local release = extractRelease("update", data)
 
-    if not remoteRelease then
+    if not release then
         print("Downloaded updater has no release number")
         return
     end
 
-    print("Downloaded updater release: v" .. remoteRelease)
+    print("Downloaded updater release: v" .. release)
 
     local temp = fullPath(TEMP_UPDATER)
 
@@ -169,9 +170,9 @@ local function bootstrap()
         return
     end
 
-    local valid, syntaxErr = validateLua(temp)
+    local ok, syntaxErr = validate(temp)
 
-    if not valid then
+    if not ok then
         fs.delete(temp)
         print("Downloaded updater failed validation")
         print(syntaxErr or "")
@@ -179,21 +180,17 @@ local function bootstrap()
     end
 
     print("Running downloaded updater...")
-    local ok = shell.run(temp, "--apply")
+    shell.run(temp, "--apply")
 
     if fs.exists(temp) then
         fs.delete(temp)
-    end
-
-    if ok == false then
-        print("Update did not complete")
     end
 end
 
 local function apply()
     print("Applying CAIRN release v" .. RELEASE_VERSION)
 
-    cleanStage()
+    clearStage()
     fs.makeDir(fullPath(STAGE_DIR))
 
     for _, name in ipairs(FILES) do
@@ -202,7 +199,7 @@ local function apply()
         local data, err = fetch(name)
 
         if not data then
-            cleanStage()
+            clearStage()
             print("Download failed: " .. name)
             print(err or "")
             return
@@ -211,15 +208,9 @@ local function apply()
         local release = extractRelease(name, data)
 
         if release ~= RELEASE_VERSION then
-            cleanStage()
+            clearStage()
             print("Release mismatch")
-            print(
-                name ..
-                " is v" ..
-                tostring(release) ..
-                ", expected v" ..
-                RELEASE_VERSION
-            )
+            print(name .. " is v" .. tostring(release) .. ", expected v" .. RELEASE_VERSION)
             print("GitHub may still be updating")
             return
         end
@@ -227,15 +218,15 @@ local function apply()
         local staged = fs.combine(fullPath(STAGE_DIR), name)
 
         if not writeText(staged, data) then
-            cleanStage()
+            clearStage()
             print("Could not stage " .. name)
             return
         end
 
-        local valid, syntaxErr = validateLua(staged)
+        local ok, syntaxErr = validate(staged)
 
-        if not valid then
-            cleanStage()
+        if not ok then
+            clearStage()
             print("Validation failed: " .. name)
             print(syntaxErr or "")
             return
@@ -269,7 +260,7 @@ local function apply()
         fs.move(source, destination)
     end
 
-    cleanStage()
+    clearStage()
 
     if not writeText(fullPath(VERSION_FILE), tostring(RELEASE_VERSION)) then
         print("Installed files but could not save version record")

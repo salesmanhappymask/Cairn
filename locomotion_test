@@ -1,10 +1,9 @@
-local CAIRN_RELEASE = 6
+local CAIRN_RELEASE = 7
 local args = {...}
 
 local DRIVE_SIDE = "back"
 local STATE_FILE = ".cairn_locomotion_test"
 local STATE_VERSION = 1
-local NO_REBOOT_TIMEOUT = 3
 
 local channels = {
     up = colors.white,
@@ -25,6 +24,21 @@ local plan = {
     {"Left", "left", 5},
     {"Lower", "down", 5}
 }
+
+print("CAIRN locomotion test")
+print("Release: v" .. CAIRN_RELEASE)
+print("Bundled drive only")
+print("")
+
+if not redstone then
+    print("ERROR: redstone API is unavailable")
+    return
+end
+
+if type(redstone.setBundledOutput) ~= "function" then
+    print("ERROR: redstone.setBundledOutput is unavailable")
+    return
+end
 
 local function saveState(state)
     local h = fs.open(STATE_FILE, "w")
@@ -74,124 +88,134 @@ local function buildMoves()
     return moves
 end
 
-local function main()
-    clearDrive()
+if args[1] == "reset" then
+    print("Resetting locomotion test...")
 
-    print("CAIRN locomotion test")
-    print("Release: v" .. CAIRN_RELEASE)
-    print("Drive: bundled RedNet on " .. DRIVE_SIDE)
-    print("")
+    local ok, err = pcall(clearDrive)
 
-    if args[1] == "reset" then
-        clearDrive()
-
-        if fs.exists(STATE_FILE) then
-            fs.delete(STATE_FILE)
-        end
-
-        print("Locomotion test state cleared")
-        return
+    if not ok then
+        print("WARNING: could not clear bundled output")
+        print(tostring(err))
     end
 
-    local state = loadState()
-
-    if not state then
-        state = {
-            version = STATE_VERSION,
-            step = 1,
-            phase = "idle"
-        }
-
-        if not saveState(state) then
-            print("Could not create locomotion state")
-            return
-        end
-
-        print("Test initialized")
-        print("Total moves: 50")
-        print("")
+    if fs.exists(STATE_FILE) then
+        fs.delete(STATE_FILE)
     end
 
-    if state.version ~= STATE_VERSION then
-        print("Saved state is incompatible")
-        print("Run: locomotion_test reset")
-        return
-    end
+    print("Locomotion test state cleared")
+    return
+end
 
-    if state.phase == "armed" then
-        print("An armed movement was found without a reboot")
-        print("Clearing propulsion output and retrying the same step")
-        state.phase = "idle"
-        clearDrive()
+print("Checking bundled output...")
 
-        if not saveState(state) then
-            print("Could not repair locomotion state")
-            return
-        end
-    end
+local clearOk, clearErr = pcall(clearDrive)
 
-    local moves = buildMoves()
+if not clearOk then
+    print("ERROR clearing bundled output:")
+    print(tostring(clearErr))
+    return
+end
 
-    if state.step > #moves then
-        clearDrive()
+print("Bundled output ready")
+print("")
 
-        if fs.exists(STATE_FILE) then
-            fs.delete(STATE_FILE)
-        end
+local state = loadState()
 
-        print("Test complete")
-        return
-    end
-
-    local move = moves[state.step]
-    local channel = channels[move.direction]
-
-    if not channel then
-        print("Invalid movement channel")
-        return
-    end
-
-    print("Step " .. state.step .. "/" .. #moves)
-    print(move.label)
-    print("Direction: " .. move.direction)
-    print("Channel: " .. tostring(channel))
-    print("")
-
-    clearDrive()
-    sleep(0.1)
-
-    state.phase = "armed"
+if not state then
+    state = {
+        version = STATE_VERSION,
+        step = 1,
+        phase = "idle"
+    }
 
     if not saveState(state) then
-        print("Could not arm movement transaction")
+        print("ERROR: could not create locomotion state")
         return
     end
 
-    print("Moving...")
-    redstone.setBundledOutput(DRIVE_SIDE, channel)
+    print("Test initialized")
+    print("Total moves: 50")
+    print("")
+end
 
-    sleep(NO_REBOOT_TIMEOUT)
+if state.version ~= STATE_VERSION then
+    print("ERROR: incompatible saved state")
+    print("Run: locomotion_test reset")
+    return
+end
 
+if state.phase == "armed" then
+    print("Previous movement did not reboot cleanly")
+    print("Returning that movement to pending state")
+    state.phase = "idle"
+
+    if not saveState(state) then
+        print("ERROR: could not repair saved state")
+        return
+    end
+end
+
+local moves = buildMoves()
+
+if state.step > #moves then
     clearDrive()
 
-    local current = loadState()
-
-    if current and current.phase == "armed" then
-        current.phase = "idle"
-        saveState(current)
+    if fs.exists(STATE_FILE) then
+        fs.delete(STATE_FILE)
     end
 
-    print("")
-    print("No carriage reboot detected")
-    print("The drive signal was cleared")
-    print("Movement remains on step " .. state.step)
+    print("Test complete")
+    return
 end
 
-local ok, err = pcall(main)
+local move = moves[state.step]
+local channel = channels[move.direction]
 
-if not ok then
-    pcall(redstone.setBundledOutput, DRIVE_SIDE, 0)
-    print("")
-    print("CAIRN locomotion error:")
-    print(tostring(err))
+print("Step " .. state.step .. "/" .. #moves)
+print(move.label)
+print("Direction: " .. move.direction)
+print("Bundled value: " .. tostring(channel))
+print("")
+
+state.phase = "armed"
+
+if not saveState(state) then
+    print("ERROR: could not arm movement state")
+    return
 end
+
+print("Energizing movement channel...")
+
+local moveOk, moveErr = pcall(
+    redstone.setBundledOutput,
+    DRIVE_SIDE,
+    channel
+)
+
+if not moveOk then
+    state.phase = "idle"
+    saveState(state)
+
+    print("ERROR setting bundled output:")
+    print(tostring(moveErr))
+    return
+end
+
+print("Signal applied")
+print("Waiting for carriage movement/reboot...")
+
+sleep(3)
+
+local offOk, offErr = pcall(clearDrive)
+
+state.phase = "idle"
+saveState(state)
+
+if not offOk then
+    print("WARNING: failed to clear output")
+    print(tostring(offErr))
+end
+
+print("")
+print("No reboot detected")
+print("Movement remains pending at step " .. state.step)

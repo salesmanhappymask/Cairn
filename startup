@@ -1,8 +1,10 @@
-local CAIRN_RELEASE = 6
+local CAIRN_RELEASE = 7
 local DRIVE_SIDE = "back"
 local STATE_FILE = ".cairn_locomotion_test"
 
-redstone.setBundledOutput(DRIVE_SIDE, 0)
+if redstone and redstone.setBundledOutput then
+    redstone.setBundledOutput(DRIVE_SIDE, 0)
+end
 
 if fs.exists(STATE_FILE) then
     local h = fs.open(STATE_FILE, "r")
