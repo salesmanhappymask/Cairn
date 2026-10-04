@@ -1,15 +1,15 @@
 local args = {...}
 
-local RELEASE_VERSION = 8
+local RELEASE_VERSION = 9
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
 local TEMP_UPDATER = ".cairn_update_new"
 local STAGE_DIR = ".cairn_update_stage"
 local VERSION_FILE = ".cairn_version"
+local STATE_FILE = ".cairn_drive_state"
 
 local FILES = {
     "startup",
-    "locomotion_test",
-    "drive_test",
+    "cairn",
     "update"
 }
 
@@ -238,7 +238,8 @@ local function apply()
 
     local preserve = {
         [TEMP_UPDATER] = true,
-        [STAGE_DIR] = true
+        [STAGE_DIR] = true,
+        [STATE_FILE] = true
     }
 
     for _, name in ipairs(fs.list(ROOT)) do
