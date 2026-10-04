@@ -1,12 +1,8 @@
-local CAIRN_RELEASE = 4
+local CAIRN_RELEASE = 5
 
 sleep(1)
 
 if fs.exists(".cairn_locomotion_test") then
-    print("CAIRN v" .. CAIRN_RELEASE .. " resuming locomotion test")
-    local ok = shell.run("locomotion_test", "--resume")
-
-    if ok == false then
-        print("CAIRN locomotion resume failed")
-    end
+    print("CAIRN v" .. CAIRN_RELEASE .. " locomotion resume")
+    shell.run("locomotion_test", "--resume")
 end

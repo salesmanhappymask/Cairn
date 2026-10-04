@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 4
+local CAIRN_RELEASE = 5
 
 local sides = {
     "left",
@@ -9,21 +9,17 @@ local sides = {
     "back"
 }
 
-local function safeType(name)
+local function getType(name)
     local ok, value = pcall(peripheral.getType, name)
 
     if not ok then
         return "ERROR: " .. tostring(value)
     end
 
-    if value == nil then
-        return "nil"
-    end
-
     return tostring(value)
 end
 
-local function safeMethods(name)
+local function getMethods(name)
     local ok, value = pcall(peripheral.getMethods, name)
 
     if not ok then
@@ -37,49 +33,30 @@ local function safeMethods(name)
     return table.concat(value, ", ")
 end
 
-print("CAIRN probe v" .. CAIRN_RELEASE)
+print("CAIRN probe")
+print("Release: v" .. CAIRN_RELEASE)
 print("Computer ID: " .. tostring(os.getComputerID()))
-print("")
-
-if fs.exists(".cairn_version") then
-    local h = fs.open(".cairn_version", "r")
-
-    if h then
-        print("Installed release record: v" .. tostring(h.readAll()))
-        h.close()
-    else
-        print("Installed release record: unreadable")
-    end
-else
-    print("Installed release record: missing")
-end
-
-print("")
-print("Program files:")
-print("  startup: " .. tostring(fs.exists("startup")))
-print("  locomotion_test: " .. tostring(fs.exists("locomotion_test")))
-print("  cairn_probe: " .. tostring(fs.exists("cairn_probe")))
-print("  update: " .. tostring(fs.exists("update")))
 print("")
 
 print("Direct peripherals:")
 
-local directCount = 0
+local direct = 0
 
 for _, side in ipairs(sides) do
     if peripheral.isPresent(side) then
-        directCount = directCount + 1
-        print("  " .. side .. " [" .. safeType(side) .. "]")
-        print("    " .. safeMethods(side))
+        direct = direct + 1
+        print("  " .. side)
+        print("    type: " .. getType(side))
+        print("    methods: " .. getMethods(side))
     end
 end
 
-if directCount == 0 then
+if direct == 0 then
     print("  none")
 end
 
 print("")
-print("All peripheral names:")
+print("Network peripheral names:")
 
 if peripheral.getNames then
     local ok, names = pcall(peripheral.getNames)
@@ -87,19 +64,27 @@ if peripheral.getNames then
     if ok and type(names) == "table" then
         if #names == 0 then
             print("  none")
-        else
-            for _, name in ipairs(names) do
-                print("  " .. tostring(name) .. " [" .. safeType(name) .. "]")
-                print("    " .. safeMethods(name))
-            end
+        end
+
+        for _, name in ipairs(names) do
+            print("  " .. tostring(name))
+            print("    type: " .. getType(name))
+            print("    methods: " .. getMethods(name))
         end
     else
-        print("  peripheral.getNames failed")
+        print("  getNames failed")
         print("  " .. tostring(names))
     end
 else
-    print("  peripheral.getNames is unavailable")
+    print("  peripheral.getNames unavailable")
 end
 
+print("")
+print("Expected RIM methods:")
+print("  move")
+print("  anchored_move")
+print("  check_anchored_move")
+print("  unanchored_move")
+print("  check_unanchored_move")
 print("")
 print("Probe complete")

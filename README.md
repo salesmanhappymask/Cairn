@@ -1,53 +1,55 @@
 # Cairn
 
-Current release: v4
+Current release: v5
 
-Files:
+This release changes locomotion to use the exact ComputerCraft API implemented by Redstone in Motion 2.3.0.0.
 
-- update
-- startup
-- locomotion_test
-- cairn_probe
-- README.md
+The uploaded mod implements these Carriage Controller methods:
 
-The updater has no manifest. Every managed program contains the Cairn release number. The updater verifies that every downloaded program belongs to the same release before deleting or replacing the installed files.
+- move(direction, simulation, anchoring)
+- anchored_move(direction)
+- check_anchored_move(direction)
+- unanchored_move(direction)
+- check_unanchored_move(direction)
 
-If GitHub serves a mixture of old and new files, the update aborts and tells you which file is stale.
+The v5 locomotion test uses only:
+
+- check_unanchored_move(direction)
+- unanchored_move(direction)
+
+Directions are passed as strings accepted directly by the mod:
+
+- up
+- down
+- north
+- south
+- west
+- east
 
 Run:
 
 update
 
-You should see:
+Confirm that the updater reports release v5.
 
-CAIRN updater
-Installed release: v...
-Downloaded updater release: v4
-Applying CAIRN release v4
-All release files verified as v4
-CAIRN update complete
-Installed release: v4
-
-For diagnostics run:
+Then run:
 
 cairn_probe
 
-It does not move the carriage. It prints the installed release, program files, direct peripherals, network peripheral names, peripheral types, and methods.
+The probe should show the controller and the five methods above.
 
-For the movement test run:
+Then run:
 
 locomotion_test
 
-or:
+or provide the initial facing directly:
 
 locomotion_test north
 locomotion_test south
 locomotion_test east
 locomotion_test west
 
-The movement test now identifies itself as release v4 immediately when it starts.
-
-Sequence:
+Movement sequence:
 
 Up 5
 Forward 5
@@ -58,6 +60,6 @@ Right 10
 Left 5
 Down 5
 
-Reset saved progress with:
+Reset an interrupted test with:
 
 locomotion_test reset
