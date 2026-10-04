@@ -1,0 +1,199 @@
+local args = {...}
+
+local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
+local TEMP_UPDATER = ".cairn_update_new"
+local STAGE_DIR = ".cairn_update_stage"
+
+local FILES = {
+    "startup",
+    "locomotion_test",
+    "update"
+}
+
+local function runningDir()
+    if shell.getRunningProgram then
+        return fs.getDir(shell.getRunningProgram())
+    end
+    return shell.dir()
+end
+
+local ROOT = runningDir()
+
+local function path(name)
+    if ROOT == "" then
+        return name
+    end
+    return fs.combine(ROOT, name)
+end
+
+local function fetch(url)
+    if not http or not http.get then
+        return nil, "HTTP API unavailable"
+    end
+
+    local ok, handle, err = pcall(http.get, url)
+
+    if not ok then
+        return nil, tostring(handle)
+    end
+
+    if not handle then
+        return nil, tostring(err or "HTTP request failed")
+    end
+
+    local data = handle.readAll()
+    handle.close()
+
+    if not data or data == "" then
+        return nil, "Empty response"
+    end
+
+    return data
+end
+
+local function writeFile(filePath, data)
+    local h = fs.open(filePath, "w")
+
+    if not h then
+        return false
+    end
+
+    h.write(data)
+    h.close()
+    return true
+end
+
+local function validateLua(filePath)
+    local fn, err = loadfile(filePath)
+
+    if not fn then
+        return false, err
+    end
+
+    return true
+end
+
+local function cleanTemp()
+    if fs.exists(path(STAGE_DIR)) then
+        fs.delete(path(STAGE_DIR))
+    end
+end
+
+local function bootstrap()
+    local tempPath = path(TEMP_UPDATER)
+
+    if fs.exists(tempPath) then
+        fs.delete(tempPath)
+    end
+
+    print("Downloading latest Cairn updater...")
+
+    local data, err = fetch(BASE_URL .. "update")
+
+    if not data then
+        print("Updater download failed")
+        print(err or "")
+        return
+    end
+
+    if not writeFile(tempPath, data) then
+        print("Could not write temporary updater")
+        return
+    end
+
+    local ok, syntaxErr = validateLua(tempPath)
+
+    if not ok then
+        fs.delete(tempPath)
+        print("Downloaded updater failed validation")
+        print(syntaxErr or "")
+        return
+    end
+
+    local ran = shell.run(tempPath, "--apply")
+
+    if fs.exists(tempPath) then
+        fs.delete(tempPath)
+    end
+
+    if ran == false then
+        print("Update did not complete")
+    end
+end
+
+local function apply()
+    cleanTemp()
+    fs.makeDir(path(STAGE_DIR))
+
+    print("Downloading Cairn...")
+
+    for _, name in ipairs(FILES) do
+        print("  " .. name)
+
+        local data, err = fetch(BASE_URL .. name)
+
+        if not data then
+            cleanTemp()
+            print("Download failed: " .. name)
+            print(err or "")
+            return
+        end
+
+        local staged = fs.combine(path(STAGE_DIR), name)
+
+        if not writeFile(staged, data) then
+            cleanTemp()
+            print("Could not stage: " .. name)
+            return
+        end
+
+        local ok, syntaxErr = validateLua(staged)
+
+        if not ok then
+            cleanTemp()
+            print("Validation failed: " .. name)
+            print(syntaxErr or "")
+            return
+        end
+    end
+
+    print("Downloads verified")
+    print("Clearing old installation...")
+
+    local preserve = {
+        [TEMP_UPDATER] = true,
+        [STAGE_DIR] = true
+    }
+
+    for _, name in ipairs(fs.list(ROOT)) do
+        local full = path(name)
+        local drive = fs.getDrive(full)
+
+        if not preserve[name] and drive == "hdd" and not fs.isReadOnly(full) then
+            fs.delete(full)
+        end
+    end
+
+    print("Installing...")
+
+    for _, name in ipairs(FILES) do
+        local staged = fs.combine(path(STAGE_DIR), name)
+        local destination = path(name)
+
+        if fs.exists(destination) then
+            fs.delete(destination)
+        end
+
+        fs.move(staged, destination)
+    end
+
+    cleanTemp()
+
+    print("Cairn update complete")
+end
+
+if args[1] == "--apply" then
+    apply()
+else
+    bootstrap()
+end

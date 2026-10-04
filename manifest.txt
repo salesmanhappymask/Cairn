@@ -1,4 +1,0 @@
-version=1
-file=startup
-file=locomotion_test.lua
-file=update.lua

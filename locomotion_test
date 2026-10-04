@@ -4,7 +4,6 @@ local STATE_FILE = ".cairn_locomotion_test"
 local TEST_VERSION = 1
 local SETTLE_TIME = 0.75
 local FIND_TIMEOUT = 10
-
 local faces = {"left", "right", "top", "bottom", "front", "back"}
 
 local directionSets = {
@@ -16,9 +15,11 @@ local directionSets = {
 
 local function writeState(state)
     local h = fs.open(STATE_FILE, "w")
+
     if not h then
         return false, "Could not open state file"
     end
+
     h.write(textutils.serialize(state))
     h.close()
     return true
@@ -28,10 +29,13 @@ local function readState()
     if not fs.exists(STATE_FILE) then
         return nil
     end
+
     local h = fs.open(STATE_FILE, "r")
+
     if not h then
         return nil
     end
+
     local data = h.readAll()
     h.close()
     return textutils.unserialize(data)
@@ -44,56 +48,57 @@ local function addUnique(list, seen, name)
     end
 end
 
-local function getNames()
-    local list = {}
+local function getPeripheralNames()
+    local names = {}
     local seen = {}
 
     for _, side in ipairs(faces) do
         local ok, present = pcall(peripheral.isPresent, side)
+
         if ok and present then
-            addUnique(list, seen, side)
+            addUnique(names, seen, side)
         end
     end
 
     if peripheral.getNames then
-        local ok, names = pcall(peripheral.getNames)
-        if ok and type(names) == "table" then
-            for _, name in ipairs(names) do
-                addUnique(list, seen, name)
+        local ok, found = pcall(peripheral.getNames)
+
+        if ok and type(found) == "table" then
+            for _, name in ipairs(found) do
+                addUnique(names, seen, name)
             end
         end
     end
 
-    return list
+    return names
 end
 
-local function getMethods(name)
+local function hasMove(name)
     local ok, methods = pcall(peripheral.getMethods, name)
-    if not ok or type(methods) ~= "table" then
-        return nil
-    end
-    return methods
-end
 
-local function hasMethod(methods, wanted)
+    if not ok or type(methods) ~= "table" then
+        return false
+    end
+
     for _, method in ipairs(methods) do
-        if method == wanted then
+        if method == "move" then
             return true
         end
     end
+
     return false
 end
 
-local function scoreController(name)
-    local methods = getMethods(name)
-    if not methods or not hasMethod(methods, "move") then
+local function controllerScore(name)
+    if not hasMove(name) then
         return nil
     end
 
     local typeName = ""
-    local ok, value = pcall(peripheral.getType, name)
-    if ok and value then
-        typeName = tostring(value)
+    local ok, foundType = pcall(peripheral.getType, name)
+
+    if ok and foundType then
+        typeName = tostring(foundType)
     end
 
     local probe = string.lower(tostring(name) .. " " .. typeName)
@@ -102,12 +107,15 @@ local function scoreController(name)
     if string.find(probe, "redstoneinmotion", 1, true) then
         score = score + 100
     end
+
     if string.find(probe, "carriagecontroller", 1, true) then
         score = score + 100
     end
+
     if string.find(probe, "carriage", 1, true) then
         score = score + 25
     end
+
     if string.find(probe, "controller", 1, true) then
         score = score + 10
     end
@@ -119,24 +127,26 @@ local function scanController()
     local bestName = nil
     local bestType = nil
     local bestScore = -1
-    local tied = false
+    local genericCount = 0
 
-    for _, name in ipairs(getNames()) do
-        local score, typeName = scoreController(name)
+    for _, name in ipairs(getPeripheralNames()) do
+        local score, typeName = controllerScore(name)
+
         if score then
+            if score == 1 then
+                genericCount = genericCount + 1
+            end
+
             if score > bestScore then
                 bestName = name
                 bestType = typeName
                 bestScore = score
-                tied = false
-            elseif score == bestScore and name ~= bestName then
-                tied = true
             end
         end
     end
 
-    if tied and bestScore <= 1 then
-        return nil, nil, "Multiple move-capable peripherals found"
+    if bestScore == 1 and genericCount > 1 then
+        return nil, nil, "Multiple unidentified move-capable peripherals found"
     end
 
     return bestName, bestType
@@ -147,26 +157,30 @@ local function findController()
 
     while os.clock() - started < FIND_TIMEOUT do
         local name, typeName, err = scanController()
+
         if name then
             return name, typeName
         end
+
         if err then
             return nil, nil, err
         end
+
         sleep(0.25)
     end
 
-    return nil, nil, "No carriage controller found"
+    return nil, nil, "No Redstone in Motion carriage controller found"
 end
 
-local function resultText(...)
-    local values = {...}
+local function resultText(values, startAt)
     local parts = {}
-    for i = 1, #values do
+
+    for i = startAt, #values do
         if values[i] ~= nil then
             parts[#parts + 1] = tostring(values[i])
         end
     end
+
     return table.concat(parts, " ")
 end
 
@@ -175,18 +189,19 @@ local function callMove(name, direction, simulate)
     local callOk = table.remove(result, 1)
 
     if not callOk then
-        return false, resultText(unpack(result))
+        return false, resultText(result, 1)
     end
 
     if result[1] == false then
-        return false, resultText(unpack(result, 2))
+        return false, resultText(result, 2)
     end
 
-    return true, resultText(unpack(result, 2))
+    return true, resultText(result, 2)
 end
 
 local function buildMoves(forwardName)
     local d = directionSets[forwardName]
+
     local segments = {
         {"Raise", 1, 5},
         {"Forward", d.forward, 5},
@@ -221,21 +236,31 @@ local function chooseForward()
 
     if requested then
         requested = string.lower(requested)
+
         if directionSets[requested] then
             return requested
         end
     end
 
-    print("Redstone in Motion uses world directions.")
     print("Which world direction is Cairn facing?")
     write("north/south/east/west: ")
 
     local answer = string.lower(read() or "")
+
     if directionSets[answer] then
         return answer
     end
 
     return nil
+end
+
+if args[1] == "reset" then
+    if fs.exists(STATE_FILE) then
+        fs.delete(STATE_FILE)
+    end
+
+    print("Locomotion test state cleared")
+    return
 end
 
 local state = readState()
@@ -255,14 +280,15 @@ if not state then
     }
 
     local ok, err = writeState(state)
+
     if not ok then
-        print(err)
+        print(err or "Could not save test state")
         return
     end
 
     print("CAIRN locomotion test")
     print("Forward: " .. forwardName)
-    print("Moves: 50")
+    print("Total moves: 50")
     print("")
 end
 
@@ -278,6 +304,7 @@ while true do
         if fs.exists(STATE_FILE) then
             fs.delete(STATE_FILE)
         end
+
         print("Test complete")
         return
     end
@@ -288,24 +315,27 @@ while true do
     if not controllerName then
         print("Locomotion test stopped")
         print(findErr or "Controller discovery failed")
-        print("Progress remains saved at step " .. state.index)
+        print("Saved at step " .. state.index)
         return
     end
 
     print("Step " .. state.index .. "/" .. #moves .. ": " .. move.label)
     print("Controller: " .. controllerName)
+
     if controllerType and controllerType ~= "" then
         print("Type: " .. controllerType)
     end
 
-    local canMove, simErr = callMove(controllerName, move.direction, true)
+    local possible, simulationMessage = callMove(controllerName, move.direction, true)
 
-    if not canMove then
+    if not possible then
         print("Simulation failed")
-        if simErr ~= "" then
-            print(simErr)
+
+        if simulationMessage ~= "" then
+            print(simulationMessage)
         end
-        print("Progress remains saved at step " .. state.index)
+
+        print("Saved at step " .. state.index)
         return
     end
 
@@ -313,6 +343,7 @@ while true do
     state.index = state.index + 1
 
     local saved, saveErr = writeState(state)
+
     if not saved then
         state.index = currentIndex
         print("Could not save movement state")
@@ -320,16 +351,19 @@ while true do
         return
     end
 
-    local moved, moveErr = callMove(controllerName, move.direction, false)
+    local moved, moveMessage = callMove(controllerName, move.direction, false)
 
     if not moved then
         state.index = currentIndex
         writeState(state)
+
         print("Move failed")
-        if moveErr ~= "" then
-            print(moveErr)
+
+        if moveMessage ~= "" then
+            print(moveMessage)
         end
-        print("Progress restored to step " .. state.index)
+
+        print("Restored to step " .. state.index)
         return
     end
 
