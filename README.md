@@ -1,62 +1,53 @@
 # Cairn
 
-CAIRN locomotion test v2.
+Current repository release: v3
 
-Repository:
+## Update system
 
-https://github.com/salesmanhappymask/Cairn
+The repository does not use a manifest.
 
-## Install
+The release number is embedded directly in the `update` program.
 
-Place these files in the repository root:
+On every update, the computer prints:
 
-- update
-- startup
-- locomotion_test
-- README.md
+- the currently installed Cairn release
+- the release number of the updater downloaded from GitHub
+- the release being applied
+- the final installed release
 
-On a fresh ComputerCraft computer, manually install only `update`.
+The installed release is stored locally in:
 
-Then run:
+`.cairn_version`
 
-update
+GitHub downloads include a changing cache-busting query so repeated update attempts are less likely to receive an older cached raw file.
 
-Future updates also use:
+If GitHub is still propagating a change, running `update` again will clearly show which updater release was actually downloaded.
 
-update
+## Fresh installation
+
+Manually place only `update` on a new ComputerCraft computer.
+
+Run:
+
+`update`
+
+After that, all future updates also use:
+
+`update`
 
 ## Locomotion test
 
 Run:
 
-locomotion_test
+`locomotion_test`
 
-Or specify Cairn's forward world direction:
+or:
 
-locomotion_test north
-locomotion_test south
-locomotion_test east
-locomotion_test west
+`locomotion_test north`
+`locomotion_test south`
+`locomotion_test east`
+`locomotion_test west`
 
-The program now prints immediately when it starts and catches runtime errors so failures should remain visible on the terminal.
+Reset saved test progress with:
 
-Sequence:
-
-Up 5
-Forward 5
-Backward 10
-Forward 5
-Left 5
-Right 10
-Left 5
-Down 5
-
-The program performs one carriage movement per execution. If the computer reboots because it moved with the carriage, `startup` resumes the next step. If Redstone in Motion returns normally without rebooting the computer, the program launches the next step itself.
-
-The carriage controller is rediscovered before every movement. The program examines all six direct faces and all peripherals exposed by wired modem networks.
-
-Each move is simulated first.
-
-Run this to discard saved progress:
-
-locomotion_test reset
+`locomotion_test reset`
