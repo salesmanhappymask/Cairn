@@ -1,43 +1,29 @@
-local CAIRN_RELEASE = 5
+local CAIRN_RELEASE = 6
 local args = {...}
 
+local DRIVE_SIDE = "back"
 local STATE_FILE = ".cairn_locomotion_test"
 local STATE_VERSION = 1
+local NO_REBOOT_TIMEOUT = 3
 
-local sides = {
-    "left",
-    "right",
-    "top",
-    "bottom",
-    "front",
-    "back"
+local channels = {
+    up = colors.white,
+    forward = colors.orange,
+    right = colors.magenta,
+    left = colors.lightBlue,
+    back = colors.yellow,
+    down = colors.lime
 }
 
-local relative = {
-    north = {
-        forward = "north",
-        backward = "south",
-        left = "west",
-        right = "east"
-    },
-    south = {
-        forward = "south",
-        backward = "north",
-        left = "east",
-        right = "west"
-    },
-    west = {
-        forward = "west",
-        backward = "east",
-        left = "south",
-        right = "north"
-    },
-    east = {
-        forward = "east",
-        backward = "west",
-        left = "north",
-        right = "south"
-    }
+local plan = {
+    {"Raise", "up", 5},
+    {"Forward", "forward", 5},
+    {"Backward", "back", 10},
+    {"Forward", "forward", 5},
+    {"Left", "left", 5},
+    {"Right", "right", 10},
+    {"Left", "left", 5},
+    {"Lower", "down", 5}
 }
 
 local function saveState(state)
@@ -69,131 +55,11 @@ local function loadState()
     return textutils.unserialize(raw)
 end
 
-local function looksLikeController(name)
-    local ok, typeName = pcall(peripheral.getType, name)
-
-    if not ok or typeName == nil then
-        return false
-    end
-
-    local text = string.lower(tostring(name) .. " " .. tostring(typeName))
-
-    if string.find(text, "carriagecontroller", 1, true) then
-        return true
-    end
-
-    if string.find(text, "carriage_controller", 1, true) then
-        return true
-    end
-
-    return false
+local function clearDrive()
+    redstone.setBundledOutput(DRIVE_SIDE, 0)
 end
 
-local function findController()
-    for _, side in ipairs(sides) do
-        if peripheral.isPresent(side) and looksLikeController(side) then
-            return side
-        end
-    end
-
-    if peripheral.getNames then
-        local ok, names = pcall(peripheral.getNames)
-
-        if ok and type(names) == "table" then
-            for _, name in ipairs(names) do
-                if looksLikeController(name) then
-                    return name
-                end
-            end
-        end
-    end
-
-    return nil
-end
-
-local function printVisible()
-    print("Visible peripherals:")
-
-    local found = false
-    local seen = {}
-
-    local function show(name)
-        if seen[name] then
-            return
-        end
-
-        seen[name] = true
-        found = true
-
-        local ok, typeName = pcall(peripheral.getType, name)
-
-        if ok then
-            print("  " .. tostring(name) .. " [" .. tostring(typeName) .. "]")
-        else
-            print("  " .. tostring(name) .. " [type lookup failed]")
-        end
-    end
-
-    for _, side in ipairs(sides) do
-        if peripheral.isPresent(side) then
-            show(side)
-        end
-    end
-
-    if peripheral.getNames then
-        local ok, names = pcall(peripheral.getNames)
-
-        if ok and type(names) == "table" then
-            for _, name in ipairs(names) do
-                show(name)
-            end
-        end
-    end
-
-    if not found then
-        print("  none")
-    end
-end
-
-local function callRim(controller, method, direction)
-    local ok, success, message, x, y, z = pcall(
-        peripheral.call,
-        controller,
-        method,
-        direction
-    )
-
-    if not ok then
-        return false, tostring(success)
-    end
-
-    if success == false then
-        local text = tostring(message or "RIM rejected movement")
-
-        if x ~= nil and y ~= nil and z ~= nil then
-            text = text .. " at " .. tostring(x) .. "," .. tostring(y) .. "," .. tostring(z)
-        end
-
-        return false, text
-    end
-
-    return true
-end
-
-local function buildMoves(facing)
-    local d = relative[facing]
-
-    local plan = {
-        {"Raise", "up", 5},
-        {"Forward", d.forward, 5},
-        {"Backward", d.backward, 10},
-        {"Forward", d.forward, 5},
-        {"Left", d.left, 5},
-        {"Right", d.right, 10},
-        {"Left", d.left, 5},
-        {"Lower", "down", 5}
-    }
-
+local function buildMoves()
     local moves = {}
 
     for _, segment in ipairs(plan) do
@@ -208,87 +74,67 @@ local function buildMoves(facing)
     return moves
 end
 
-local function getFacing()
-    if args[1] and args[1] ~= "--resume" then
-        local value = string.lower(args[1])
-
-        if relative[value] then
-            return value
-        end
-    end
-
-    print("Which world direction is Cairn facing?")
-    write("north/south/east/west: ")
-
-    local value = read()
-
-    if value then
-        value = string.lower(value)
-
-        if relative[value] then
-            return value
-        end
-    end
-
-    return nil
-end
-
 local function main()
+    clearDrive()
+
     print("CAIRN locomotion test")
     print("Release: v" .. CAIRN_RELEASE)
-    print("RIM API: native 2.3.0.0 commands")
+    print("Drive: bundled RedNet on " .. DRIVE_SIDE)
     print("")
 
     if args[1] == "reset" then
+        clearDrive()
+
         if fs.exists(STATE_FILE) then
             fs.delete(STATE_FILE)
         end
 
-        print("Test state cleared")
+        print("Locomotion test state cleared")
         return
     end
 
     local state = loadState()
 
     if not state then
-        local facing = getFacing()
-
-        if not facing then
-            print("Invalid facing")
-            return
-        end
-
         state = {
             version = STATE_VERSION,
-            facing = facing,
-            step = 1
+            step = 1,
+            phase = "idle"
         }
 
         if not saveState(state) then
-            print("Could not save test state")
+            print("Could not create locomotion state")
             return
         end
 
-        print("")
         print("Test initialized")
-        print("Facing: " .. facing)
-        print("")
-    else
-        print("Resuming test")
-        print("Facing: " .. tostring(state.facing))
-        print("Next step: " .. tostring(state.step))
+        print("Total moves: 50")
         print("")
     end
 
-    if state.version ~= STATE_VERSION or not relative[state.facing] then
-        print("Saved state is invalid")
+    if state.version ~= STATE_VERSION then
+        print("Saved state is incompatible")
         print("Run: locomotion_test reset")
         return
     end
 
-    local moves = buildMoves(state.facing)
+    if state.phase == "armed" then
+        print("An armed movement was found without a reboot")
+        print("Clearing propulsion output and retrying the same step")
+        state.phase = "idle"
+        clearDrive()
+
+        if not saveState(state) then
+            print("Could not repair locomotion state")
+            return
+        end
+    end
+
+    local moves = buildMoves()
 
     if state.step > #moves then
+        clearDrive()
+
         if fs.exists(STATE_FILE) then
             fs.delete(STATE_FILE)
         end
@@ -297,76 +143,54 @@ local function main()
         return
     end
 
-    print("Searching for RIM carriage controller...")
+    local move = moves[state.step]
+    local channel = channels[move.direction]
 
-    local controller = findController()
-
-    if not controller then
-        print("Controller not found")
-        printVisible()
-        print("Run cairn_probe for method details")
+    if not channel then
+        print("Invalid movement channel")
         return
     end
-
-    local okType, typeName = pcall(peripheral.getType, controller)
-
-    print("Controller: " .. tostring(controller))
-    print("Type: " .. tostring(okType and typeName or "unknown"))
-
-    local move = moves[state.step]
 
     print("Step " .. state.step .. "/" .. #moves)
-    print(move.label .. " -> " .. move.direction)
-    print("Checking unanchored move...")
+    print(move.label)
+    print("Direction: " .. move.direction)
+    print("Channel: " .. tostring(channel))
+    print("")
 
-    local valid, checkErr = callRim(
-        controller,
-        "check_unanchored_move",
-        move.direction
-    )
+    clearDrive()
+    sleep(0.1)
 
-    if not valid then
-        print("Movement check failed")
-        print(tostring(checkErr))
-        return
-    end
-
-    print("Movement check passed")
-
-    local oldStep = state.step
-    state.step = state.step + 1
+    state.phase = "armed"
 
     if not saveState(state) then
-        print("Could not save next step")
+        print("Could not arm movement transaction")
         return
     end
 
-    print("Executing unanchored move...")
+    print("Moving...")
+    redstone.setBundledOutput(DRIVE_SIDE, channel)
 
-    local moved, moveErr = callRim(
-        controller,
-        "unanchored_move",
-        move.direction
-    )
+    sleep(NO_REBOOT_TIMEOUT)
 
-    if not moved then
-        state.step = oldStep
-        saveState(state)
+    clearDrive()
 
-        print("Movement failed")
-        print(tostring(moveErr))
-        print("Progress restored to step " .. oldStep)
-        return
+    local current = loadState()
+
+    if current and current.phase == "armed" then
+        current.phase = "idle"
+        saveState(current)
     end
 
-    print("Move returned without reboot")
-    sleep(1)
-    os.reboot()
+    print("")
+    print("No carriage reboot detected")
+    print("The drive signal was cleared")
+    print("Movement remains on step " .. state.step)
 end
 
 local ok, err = pcall(main)
 
 if not ok then
+    pcall(redstone.setBundledOutput, DRIVE_SIDE, 0)
     print("")
     print("CAIRN locomotion error:")
     print(tostring(err))

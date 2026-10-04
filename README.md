@@ -1,65 +1,82 @@
 # Cairn
 
-Current release: v5
+Current release: v6
 
-This release changes locomotion to use the exact ComputerCraft API implemented by Redstone in Motion 2.3.0.0.
+CAIRN locomotion now uses bundled redstone through MineFactory Reloaded RedNet cable rather than the Redstone in Motion ComputerCraft peripheral.
 
-The uploaded mod implements these Carriage Controller methods:
+## Drive bus
 
-- move(direction, simulation, anchoring)
-- anchored_move(direction)
-- check_anchored_move(direction)
-- unanchored_move(direction)
-- check_unanchored_move(direction)
+The bundled cable is attached to the back of the computer.
 
-The v5 locomotion test uses only:
+Movement channels:
 
-- check_unanchored_move(direction)
-- unanchored_move(direction)
+- White = Up
+- Orange = Forward / North
+- Magenta = Right / East
+- Light Blue = Left / West
+- Yellow = Back / South
+- Lime = Down
 
-Directions are passed as strings accepted directly by the mod:
+Only one propulsion channel is ever energized at a time.
 
-- up
-- down
-- north
-- south
-- west
-- east
+## Test route
+
+Run:
+
+locomotion_test
+
+The test performs:
+
+- Up 5
+- Forward 5
+- Backward 10
+- Forward 5
+- Left 5
+- Right 10
+- Left 5
+- Down 5
+
+Total movement: 50 blocks.
+
+The route returns Cairn to its starting position.
+
+Before every move, the program:
+
+1. Clears all bundled propulsion output.
+2. Saves the movement as armed.
+3. Energizes exactly one bundled color.
+4. Expects Redstone in Motion to move the carriage and reboot the computer.
+
+On reboot, startup:
+
+1. Immediately clears the bundled output on the back.
+2. Marks the armed movement complete.
+3. Waits one second.
+4. Resumes the next step.
+
+If no reboot occurs within three seconds, the program clears the drive output and leaves the current movement pending rather than advancing.
+
+When all 50 movements are complete the terminal prints:
+
+Test complete
+
+The terminal is not cleared.
+
+To abandon a saved test:
+
+locomotion_test reset
+
+## Updating
+
+Upload these repository files:
+
+- update
+- startup
+- locomotion_test
+- README.md
 
 Run:
 
 update
 
-Confirm that the updater reports release v5.
-
-Then run:
-
-cairn_probe
-
-The probe should show the controller and the five methods above.
-
-Then run:
-
-locomotion_test
-
-or provide the initial facing directly:
-
-locomotion_test north
-locomotion_test south
-locomotion_test east
-locomotion_test west
-
-Movement sequence:
-
-Up 5
-Forward 5
-Backward 10
-Forward 5
-Left 5
-Right 10
-Left 5
-Down 5
-
-Reset an interrupted test with:
-
-locomotion_test reset
+The updater should report release v6 before installing.

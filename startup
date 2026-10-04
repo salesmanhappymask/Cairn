@@ -1,8 +1,31 @@
-local CAIRN_RELEASE = 5
+local CAIRN_RELEASE = 6
+local DRIVE_SIDE = "back"
+local STATE_FILE = ".cairn_locomotion_test"
 
-sleep(1)
+redstone.setBundledOutput(DRIVE_SIDE, 0)
 
-if fs.exists(".cairn_locomotion_test") then
-    print("CAIRN v" .. CAIRN_RELEASE .. " locomotion resume")
+if fs.exists(STATE_FILE) then
+    local h = fs.open(STATE_FILE, "r")
+
+    if h then
+        local raw = h.readAll()
+        h.close()
+
+        local state = textutils.unserialize(raw)
+
+        if type(state) == "table" and state.phase == "armed" and type(state.step) == "number" then
+            state.step = state.step + 1
+            state.phase = "idle"
+
+            local out = fs.open(STATE_FILE, "w")
+
+            if out then
+                out.write(textutils.serialize(state))
+                out.close()
+            end
+        end
+    end
+
+    sleep(1)
     shell.run("locomotion_test", "--resume")
 end
