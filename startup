@@ -1,0 +1,5 @@
+sleep(0.75)
+
+if fs.exists(".cairn_locomotion_test") then
+    shell.run("locomotion_test", "--resume")
+end
