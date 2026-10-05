@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 24
+local CAIRN_RELEASE = 25
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -7,8 +7,10 @@ local LINK_PROTOCOL = "cairn.drive.link"
 local COMMAND_PROTOCOL = "cairn.drive.command"
 local UPDATE_PROTOCOL = "cairn.drive.update"
 
-local MAIN_STATE_FILE = ".cairn_drive.tmp"
-local SLAVE_STATE_FILE = ".cairn_drive1.tmp"
+local MAIN_STATE_FILE = "cairn_drive_state"
+local SLAVE_STATE_FILE = "cairn_drive1_state"
+local LEGACY_MAIN_STATE_FILE = ".cairn_drive.tmp"
+local LEGACY_SLAVE_STATE_FILE = ".cairn_drive1.tmp"
 
 local MAIN_STATE_VERSION = 3
 local SLAVE_STATE_VERSION = 2
@@ -79,6 +81,29 @@ local slaveMoves = {
     right = moves.right,
     down = moves.down
 }
+
+
+local function migrateLegacyState()
+    local id = os.getComputerID()
+
+    if id == MASTER_ID then
+        if fs.exists(LEGACY_MAIN_STATE_FILE) then
+            if not fs.exists(MAIN_STATE_FILE) then
+                fs.move(LEGACY_MAIN_STATE_FILE, MAIN_STATE_FILE)
+            else
+                fs.delete(LEGACY_MAIN_STATE_FILE)
+            end
+        end
+    elseif id == SLAVE_ID then
+        if fs.exists(LEGACY_SLAVE_STATE_FILE) then
+            if not fs.exists(SLAVE_STATE_FILE) then
+                fs.move(LEGACY_SLAVE_STATE_FILE, SLAVE_STATE_FILE)
+            else
+                fs.delete(LEGACY_SLAVE_STATE_FILE)
+            end
+        end
+    end
+end
 
 local function readTable(path)
     if not fs.exists(path) then
@@ -873,7 +898,7 @@ local function receiveRemoteUpdate(firstMessage)
         return false, "invalid update begin"
     end
 
-    local stage = ".cairn_remote_stage"
+    local stage = "cairn_remote_stage"
 
     if fs.exists(stage) then
         fs.delete(stage)
@@ -1224,8 +1249,8 @@ local function runSlave()
                     }, UPDATE_PROTOCOL)
                 end)
 
-                if fs.exists(".cairn_remote_stage") then
-                    fs.delete(".cairn_remote_stage")
+                if fs.exists("cairn_remote_stage") then
+                    fs.delete("cairn_remote_stage")
                 end
             end
 
@@ -1259,6 +1284,8 @@ local function runMain()
 end
 
 local id = os.getComputerID()
+
+migrateLegacyState()
 
 if id == MASTER_ID then
     runMain()

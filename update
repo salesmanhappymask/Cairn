@@ -1,18 +1,21 @@
 local args = {...}
 
-local RELEASE_VERSION = 24
+local RELEASE_VERSION = 25
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
 
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
 local UPDATE_PROTOCOL = "cairn.drive.update"
 
-local TEMP = ".cairn_update_new"
-local STAGE = ".cairn_update_stage"
-local VERSION_FILE = ".cairn_version"
-local STATE_FILE = ".cairn_drive.tmp"
+local TEMP = "cairn_update_new"
+local STAGE = "cairn_update_stage"
+local VERSION_FILE = "cairn_version"
+local STATE_FILE = "cairn_drive_state"
 local FILES = {"startup", "cairn", "update"}
 local CHUNK_SIZE = 3000
+
+local LEGACY_VERSION_FILE = ".cairn_version"
+local LEGACY_STATE_FILE = ".cairn_drive.tmp"
 
 local MASTER_WIRED_SIDE = "left"
 
@@ -24,6 +27,25 @@ local SIDES = {
     "front",
     "back"
 }
+
+
+local function migrateLegacyFiles()
+    if fs.exists(LEGACY_STATE_FILE) then
+        if not fs.exists(STATE_FILE) then
+            fs.move(LEGACY_STATE_FILE, STATE_FILE)
+        else
+            fs.delete(LEGACY_STATE_FILE)
+        end
+    end
+
+    if fs.exists(LEGACY_VERSION_FILE) then
+        if not fs.exists(VERSION_FILE) then
+            fs.move(LEGACY_VERSION_FILE, VERSION_FILE)
+        else
+            fs.delete(LEGACY_VERSION_FILE)
+        end
+    end
+end
 
 local function readAll(path)
     if not fs.exists(path) then
@@ -531,6 +553,8 @@ local function applyMain()
 end
 
 local id = os.getComputerID()
+
+migrateLegacyFiles()
 
 if args[1] == "--apply" then
     if id ~= MASTER_ID then
