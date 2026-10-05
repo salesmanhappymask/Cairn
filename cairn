@@ -1,14 +1,18 @@
-local CAIRN_RELEASE = 11
+local CAIRN_RELEASE = 12
 
-local LEFT_SIDE = "left"
-local RIGHT_SIDE = "right"
+local CONFIG = {
+    leftSide = "left",
+    rightSide = "right",
+    pulseTime = 0.15,
+    rebootTimeout = 3
+}
+
 local STATE_FILE = ".cairn_drive_state"
 local STATE_VERSION = 2
-local REBOOT_TIMEOUT = 3
 
 local moves = {
     back = {
-        side = LEFT_SIDE,
+        side = CONFIG.leftSide,
         color = colors.orange,
         colorName = "orange",
         dx = 0,
@@ -16,7 +20,7 @@ local moves = {
         dz = 1
     },
     right = {
-        side = LEFT_SIDE,
+        side = CONFIG.leftSide,
         color = colors.magenta,
         colorName = "magenta",
         dx = 1,
@@ -24,7 +28,7 @@ local moves = {
         dz = 0
     },
     left = {
-        side = LEFT_SIDE,
+        side = CONFIG.leftSide,
         color = colors.lightBlue,
         colorName = "light blue",
         dx = -1,
@@ -32,7 +36,7 @@ local moves = {
         dz = 0
     },
     down = {
-        side = LEFT_SIDE,
+        side = CONFIG.leftSide,
         color = colors.yellow,
         colorName = "yellow",
         dx = 0,
@@ -40,7 +44,7 @@ local moves = {
         dz = 0
     },
     up = {
-        side = RIGHT_SIDE,
+        side = CONFIG.rightSide,
         color = colors.lime,
         colorName = "lime",
         dx = 0,
@@ -48,7 +52,7 @@ local moves = {
         dz = 0
     },
     forward = {
-        side = RIGHT_SIDE,
+        side = CONFIG.rightSide,
         color = colors.pink,
         colorName = "pink",
         dx = 0,
@@ -74,6 +78,55 @@ local sequences = {
         {direction = "down", count = 5}
     }
 }
+
+local outMasks = {}
+
+local function maskHas(mask, color)
+    return (mask % (color + color)) >= color
+end
+
+local function maskAdd(mask, color)
+    if maskHas(mask, color) then
+        return mask
+    end
+
+    return mask + color
+end
+
+local function maskRemove(mask, color)
+    if maskHas(mask, color) then
+        return mask - color
+    end
+
+    return mask
+end
+
+local function applySide(side)
+    redstone.setBundledOutput(side, outMasks[side] or 0)
+end
+
+local function sideOn(side, color)
+    outMasks[side] = maskAdd(outMasks[side] or 0, color)
+    applySide(side)
+end
+
+local function sideOff(side, color)
+    outMasks[side] = maskRemove(outMasks[side] or 0, color)
+    applySide(side)
+end
+
+local function allOff()
+    outMasks[CONFIG.leftSide] = 0
+    outMasks[CONFIG.rightSide] = 0
+    applySide(CONFIG.leftSide)
+    applySide(CONFIG.rightSide)
+end
+
+local function pulse(side, color)
+    sideOn(side, color)
+    sleep(CONFIG.pulseTime)
+    sideOff(side, color)
+end
 
 local function defaultState()
     return {
@@ -126,11 +179,6 @@ local function loadState()
     end
 
     return state
-end
-
-local function clearOutputs()
-    redstone.setBundledOutput(LEFT_SIDE, 0)
-    redstone.setBundledOutput(RIGHT_SIDE, 0)
 end
 
 local function atIdle(state)
@@ -211,14 +259,14 @@ local function issueMove(state, direction)
         return false
     end
 
-    local clearOk, clearErr = pcall(clearOutputs)
+    local clearOk, clearErr = pcall(allOff)
 
     if not clearOk then
         term.clear()
         term.setCursorPos(1, 1)
         print("CAIRN LOCOMOTION")
         print("")
-        print("Could not clear bundled outputs")
+        print("Could not clear RedNet outputs")
         print(tostring(clearErr))
         sleep(2)
         return false
@@ -252,10 +300,10 @@ local function issueMove(state, direction)
     print("Computer side: " .. move.side)
     print("RedNet color: " .. move.colorName)
     print("")
-    print("Waiting for carriage movement...")
+    print("Pulsing RedNet channel...")
 
     local ok, err = pcall(
-        redstone.setBundledOutput,
+        pulse,
         move.side,
         move.color
     )
@@ -264,18 +312,21 @@ local function issueMove(state, direction)
         state.phase = "idle"
         state.direction = nil
         saveState(state)
-        pcall(clearOutputs)
+        pcall(allOff)
 
         print("")
-        print("Bundled output failed")
+        print("RedNet pulse failed")
         print(tostring(err))
         sleep(2)
         return false
     end
 
-    sleep(REBOOT_TIMEOUT)
+    print("Pulse complete")
+    print("Waiting for carriage reboot...")
 
-    pcall(clearOutputs)
+    sleep(CONFIG.rebootTimeout)
+
+    pcall(allOff)
 
     state.phase = "idle"
     state.direction = nil
@@ -359,7 +410,7 @@ local function showMenu(state)
     if atIdle(state) then
         print("Status: IDLE")
     else
-        print("Status: RETURNING TO IDLE")
+        print("Status: OFFSET FROM IDLE")
     end
 
     print("")
@@ -385,12 +436,12 @@ if not redstone or type(redstone.setBundledOutput) ~= "function" then
     return
 end
 
-local ok, err = pcall(clearOutputs)
+local ok, err = pcall(allOff)
 
 if not ok then
     print("CAIRN LOCOMOTION")
     print("")
-    print("Could not clear bundled drive outputs")
+    print("Could not initialize RedNet outputs")
     print(tostring(err))
     return
 end
@@ -429,7 +480,7 @@ while true do
         elseif choice == "2" then
             startSequence(state, 2)
         elseif choice == "q" then
-            clearOutputs()
+            allOff()
             term.clear()
             term.setCursorPos(1, 1)
             print("CAIRN locomotion offline")
