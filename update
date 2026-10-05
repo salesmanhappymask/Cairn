@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 16
+local RELEASE_VERSION = 17
 local MAIN_ID = 2700
 local FOLLOWER_ID = 2701
 
@@ -10,7 +10,7 @@ local UPDATE_PROTOCOL = "cairn.drive.update"
 local TEMP = ".cairn_update_new"
 local STAGE = ".cairn_update_stage"
 local VERSION_FILE = ".cairn_version"
-local STATE_FILE = ".cairn_drive_state"
+local STATE_FILE = ".cairn_drive.tmp"
 local FILES = {"startup", "cairn", "update"}
 local CHUNK_SIZE = 3000
 
