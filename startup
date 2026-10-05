@@ -1,7 +1,18 @@
-local CAIRN_RELEASE = 13
+local CAIRN_RELEASE = 14
 
-if redstone and redstone.setAnalogOutput then
-    pcall(redstone.setAnalogOutput, "right", 0)
+local SIDES = {
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "front",
+    "back"
+}
+
+if redstone and redstone.setOutput then
+    for _, side in ipairs(SIDES) do
+        pcall(redstone.setOutput, side, false)
+    end
 end
 
 sleep(0.5)

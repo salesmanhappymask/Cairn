@@ -1,17 +1,16 @@
-local CAIRN_RELEASE = 13
+local CAIRN_RELEASE = 14
 
-local DRIVE_SIDE = "right"
 local STATE_FILE = ".cairn_drive_state"
-local STATE_VERSION = 3
+local STATE_VERSION = 4
 local REBOOT_TIMEOUT = 3
 
-local moves = {
-    down = {strength = 1, colorName = "orange", dx = 0, dy = -1, dz = 0},
-    forward = {strength = 2, colorName = "magenta", dx = 0, dy = 0, dz = -1},
-    back = {strength = 3, colorName = "light blue", dx = 0, dy = 0, dz = 1},
-    right = {strength = 4, colorName = "yellow", dx = 1, dy = 0, dz = 0},
-    left = {strength = 5, colorName = "lime", dx = -1, dy = 0, dz = 0},
-    up = {strength = 6, colorName = "pink", dx = 0, dy = 1, dz = 0}
+local drive = {
+    forward = {side = "front", dx = 0, dy = 0, dz = -1},
+    back = {side = "back", dx = 0, dy = 0, dz = 1},
+    left = {side = "right", dx = -1, dy = 0, dz = 0},
+    right = {side = "left", dx = 1, dy = 0, dz = 0},
+    up = {side = "bottom", dx = 0, dy = 1, dz = 0},
+    down = {side = "top", dx = 0, dy = -1, dz = 0}
 }
 
 local sequences = {
@@ -32,6 +31,15 @@ local sequences = {
     }
 }
 
+local SIDES = {
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "front",
+    "back"
+}
+
 local function defaultState()
     return {
         version = STATE_VERSION,
@@ -48,27 +56,42 @@ end
 
 local function saveState(state)
     local h = fs.open(STATE_FILE, "w")
-    if not h then return false end
+    if not h then
+        return false
+    end
+
     h.write(textutils.serialize(state))
     h.close()
     return true
 end
 
 local function loadState()
-    if not fs.exists(STATE_FILE) then return defaultState() end
-    local h = fs.open(STATE_FILE, "r")
-    if not h then return defaultState() end
-    local raw = h.readAll()
-    h.close()
-    local state = textutils.unserialize(raw)
-    if type(state) ~= "table" or state.version ~= STATE_VERSION then
+    if not fs.exists(STATE_FILE) then
         return defaultState()
     end
+
+    local h = fs.open(STATE_FILE, "r")
+    if not h then
+        return defaultState()
+    end
+
+    local raw = h.readAll()
+    h.close()
+
+    local state = textutils.unserialize(raw)
+
+    if type(state) ~= "table" or state.version ~= STATE_VERSION then
+        state = defaultState()
+        saveState(state)
+    end
+
     return state
 end
 
-local function driveOff()
-    redstone.setAnalogOutput(DRIVE_SIDE, 0)
+local function allOff()
+    for _, side in ipairs(SIDES) do
+        redstone.setOutput(side, false)
+    end
 end
 
 local function atIdle(state)
@@ -77,17 +100,23 @@ end
 
 local function buildSequence(number)
     local result = {}
+
     for _, segment in ipairs(sequences[number]) do
         for i = 1, segment.count do
             result[#result + 1] = segment.direction
         end
     end
+
     return result
 end
 
 local function finishArmedMove(state)
-    if state.phase ~= "armed" or not state.direction then return end
-    local move = moves[state.direction]
+    if state.phase ~= "armed" or not state.direction then
+        return
+    end
+
+    local move = drive[state.direction]
+
     if not move then
         state.phase = "idle"
         state.direction = nil
@@ -109,26 +138,48 @@ local function finishArmedMove(state)
 end
 
 local function nextReturnMove(state)
-    if state.y < 0 then return "up" end
-    if state.x > 0 then return "left" end
-    if state.x < 0 then return "right" end
-    if state.z > 0 then return "forward" end
-    if state.z < 0 then return "back" end
-    if state.y > 0 then return "down" end
+    if state.y < 0 then
+        return "up"
+    end
+
+    if state.x > 0 then
+        return "left"
+    end
+
+    if state.x < 0 then
+        return "right"
+    end
+
+    if state.z > 0 then
+        return "forward"
+    end
+
+    if state.z < 0 then
+        return "back"
+    end
+
+    if state.y > 0 then
+        return "down"
+    end
+
     return nil
 end
 
 local function issueMove(state, direction)
-    local move = moves[direction]
-    if not move then return false end
+    local move = drive[direction]
 
-    local ok, err = pcall(driveOff)
+    if not move then
+        return false
+    end
+
+    local ok, err = pcall(allOff)
+
     if not ok then
         term.clear()
         term.setCursorPos(1, 1)
         print("CAIRN LOCOMOTION")
         print("")
-        print("Could not clear drive output")
+        print("Could not clear drive outputs")
         print(tostring(err))
         sleep(2)
         return false
@@ -138,6 +189,7 @@ local function issueMove(state, direction)
 
     state.phase = "armed"
     state.direction = direction
+
     if not saveState(state) then
         term.clear()
         term.setCursorPos(1, 1)
@@ -150,6 +202,7 @@ local function issueMove(state, direction)
 
     term.clear()
     term.setCursorPos(1, 1)
+
     print("CAIRN LOCOMOTION")
     print("Release v" .. CAIRN_RELEASE)
     print("")
@@ -157,18 +210,18 @@ local function issueMove(state, direction)
     print("X: " .. state.x .. "  Y: " .. state.y .. "  Z: " .. state.z)
     print("")
     print("Moving: " .. string.upper(direction))
-    print("Signal strength: " .. move.strength)
-    print("PRC output: " .. move.colorName)
+    print("Computer side: " .. move.side)
     print("")
     print("Waiting for carriage movement...")
 
-    ok, err = pcall(redstone.setAnalogOutput, DRIVE_SIDE, move.strength)
+    ok, err = pcall(redstone.setOutput, move.side, true)
 
     if not ok then
         state.phase = "idle"
         state.direction = nil
         saveState(state)
-        pcall(driveOff)
+        pcall(allOff)
+
         print("")
         print("Drive output failed")
         print(tostring(err))
@@ -178,7 +231,8 @@ local function issueMove(state, direction)
 
     sleep(REBOOT_TIMEOUT)
 
-    pcall(driveOff)
+    pcall(allOff)
+
     state.phase = "idle"
     state.direction = nil
     saveState(state)
@@ -189,6 +243,7 @@ local function issueMove(state, direction)
     print("")
     print("Press Enter to return to menu")
     read()
+
     return false
 end
 
@@ -202,15 +257,18 @@ local function startSequence(state, number)
         state.pending = nil
         state.step = 1
     end
+
     saveState(state)
 end
 
 local function handleActive(state)
     if state.active == 1 or state.active == 2 then
         local sequence = buildSequence(state.active)
+
         if state.step <= #sequence then
             return issueMove(state, sequence[state.step])
         end
+
         state.active = "return"
         state.step = 1
         saveState(state)
@@ -219,11 +277,13 @@ local function handleActive(state)
 
     if state.active == "return" then
         local direction = nextReturnMove(state)
+
         if direction then
             return issueMove(state, direction)
         end
 
         local pending = state.pending
+
         state.active = nil
         state.pending = nil
         state.step = 1
@@ -233,6 +293,7 @@ local function handleActive(state)
             startSequence(state, pending)
             return true
         end
+
         return true
     end
 
@@ -242,13 +303,20 @@ end
 local function showMenu(state)
     term.clear()
     term.setCursorPos(1, 1)
+
     print("CAIRN LOCOMOTION TEST")
     print("Release v" .. CAIRN_RELEASE)
     print("")
     print("Relative position")
     print("X: " .. state.x .. "  Y: " .. state.y .. "  Z: " .. state.z)
     print("")
-    print(atIdle(state) and "Status: IDLE" or "Status: OFFSET FROM IDLE")
+
+    if atIdle(state) then
+        print("Status: IDLE")
+    else
+        print("Status: OFFSET FROM IDLE")
+    end
+
     print("")
     print("1 - Short movement test")
     print("    Up 3, Forward 3, Back 6,")
@@ -261,26 +329,29 @@ local function showMenu(state)
     print("Q - Exit")
     print("")
     write("> ")
+
     return string.lower(read() or "")
 end
 
-if not redstone or type(redstone.setAnalogOutput) ~= "function" then
+if not redstone or type(redstone.setOutput) ~= "function" then
     print("CAIRN LOCOMOTION")
     print("")
-    print("Analog redstone API unavailable")
+    print("Redstone API unavailable")
     return
 end
 
-local ok, err = pcall(driveOff)
+local ok, err = pcall(allOff)
+
 if not ok then
     print("CAIRN LOCOMOTION")
     print("")
-    print("Could not initialize drive output")
+    print("Could not initialize drive outputs")
     print(tostring(err))
     return
 end
 
 local state = loadState()
+
 if state.phase == "armed" then
     finishArmedMove(state)
 end
@@ -290,10 +361,12 @@ while true do
 
     if state.active ~= nil then
         local continuing = handleActive(state)
+
         if continuing then
             sleep(0.1)
         else
             state = loadState()
+
             if state.active ~= nil then
                 return
             end
@@ -311,7 +384,7 @@ while true do
         elseif choice == "2" then
             startSequence(state, 2)
         elseif choice == "q" then
-            driveOff()
+            allOff()
             term.clear()
             term.setCursorPos(1, 1)
             print("CAIRN locomotion offline")

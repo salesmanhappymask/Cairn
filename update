@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 13
+local RELEASE_VERSION = 14
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
 local TEMP = ".cairn_update_new"
 local STAGE = ".cairn_update_stage"
@@ -9,49 +9,102 @@ local STATE_FILE = ".cairn_drive_state"
 local FILES = {"startup", "cairn", "update"}
 
 local function readAll(path)
-    if not fs.exists(path) then return nil end
+    if not fs.exists(path) then
+        return nil
+    end
+
     local h = fs.open(path, "r")
-    if not h then return nil end
-    local s = h.readAll()
+    if not h then
+        return nil
+    end
+
+    local data = h.readAll()
     h.close()
-    return s
+    return data
 end
 
 local function writeAll(path, data)
     local h = fs.open(path, "w")
-    if not h then return false end
+    if not h then
+        return false
+    end
+
     h.write(data)
     h.close()
     return true
 end
 
 local function releaseOf(name, data)
-    local pattern = name == "update"
-        and "local%s+RELEASE_VERSION%s*=%s*(%d+)"
-        or "local%s+CAIRN_RELEASE%s*=%s*(%d+)"
-    local n = string.match(data, pattern)
-    return n and tonumber(n) or nil
+    local pattern
+
+    if name == "update" then
+        pattern = "local%s+RELEASE_VERSION%s*=%s*(%d+)"
+    else
+        pattern = "local%s+CAIRN_RELEASE%s*=%s*(%d+)"
+    end
+
+    local value = string.match(data, pattern)
+
+    if not value then
+        return nil
+    end
+
+    return tonumber(value)
 end
 
 local function fetch(name)
+    if not http or not http.get then
+        return nil, "HTTP API unavailable"
+    end
+
     local token = tostring(os.getComputerID()) .. "_" .. tostring(math.floor(os.clock() * 1000))
-    local ok, h, err = pcall(http.get, BASE_URL .. name .. "?cairn=" .. token)
-    if not ok then return nil, tostring(h) end
-    if not h then return nil, tostring(err or "HTTP request failed") end
-    local data = h.readAll()
-    h.close()
-    if not data or data == "" then return nil, "Empty response" end
+    local ok, handle, err = pcall(
+        http.get,
+        BASE_URL .. name .. "?cairn=" .. token
+    )
+
+    if not ok then
+        return nil, tostring(handle)
+    end
+
+    if not handle then
+        return nil, tostring(err or "HTTP request failed")
+    end
+
+    local data = handle.readAll()
+    handle.close()
+
+    if not data or data == "" then
+        return nil, "Empty response"
+    end
+
     return data
 end
 
 local function validate(path)
     local fn, err = loadfile(path)
-    return fn ~= nil, err
+
+    if not fn then
+        return false, err
+    end
+
+    return true
 end
 
 local function installed()
-    local v = readAll(VERSION_FILE)
-    return v and string.gsub(v, "%s+", "") or "unknown"
+    local data = readAll(VERSION_FILE)
+
+    if not data then
+        return "unknown"
+    end
+
+    data = string.gsub(data, "%s+", "")
+
+    if data == "" then
+        return "unknown"
+    end
+
+    return data
 end
 
 local function bootstrap()
@@ -60,6 +113,7 @@ local function bootstrap()
     print("Checking GitHub...")
 
     local data, err = fetch("update")
+
     if not data then
         print("Updater download failed")
         print(err or "")
@@ -67,6 +121,7 @@ local function bootstrap()
     end
 
     local release = releaseOf("update", data)
+
     if not release then
         print("Downloaded updater has no release number")
         return
@@ -74,13 +129,17 @@ local function bootstrap()
 
     print("Downloaded updater release: v" .. release)
 
-    if fs.exists(TEMP) then fs.delete(TEMP) end
+    if fs.exists(TEMP) then
+        fs.delete(TEMP)
+    end
+
     if not writeAll(TEMP, data) then
         print("Could not write temporary updater")
         return
     end
 
     local ok, syntaxErr = validate(TEMP)
+
     if not ok then
         fs.delete(TEMP)
         print("Downloaded updater failed validation")
@@ -88,19 +147,28 @@ local function bootstrap()
         return
     end
 
+    print("Running downloaded updater...")
     shell.run(TEMP, "--apply")
-    if fs.exists(TEMP) then fs.delete(TEMP) end
+
+    if fs.exists(TEMP) then
+        fs.delete(TEMP)
+    end
 end
 
 local function apply()
     print("Applying CAIRN release v" .. RELEASE_VERSION)
 
-    if fs.exists(STAGE) then fs.delete(STAGE) end
+    if fs.exists(STAGE) then
+        fs.delete(STAGE)
+    end
+
     fs.makeDir(STAGE)
 
     for _, name in ipairs(FILES) do
         print("Downloading " .. name)
+
         local data, err = fetch(name)
+
         if not data then
             fs.delete(STAGE)
             print("Download failed: " .. name)
@@ -109,14 +177,17 @@ local function apply()
         end
 
         local release = releaseOf(name, data)
+
         if release ~= RELEASE_VERSION then
             fs.delete(STAGE)
             print("Release mismatch")
             print(name .. " is v" .. tostring(release) .. ", expected v" .. RELEASE_VERSION)
+            print("GitHub may still be updating")
             return
         end
 
         local path = fs.combine(STAGE, name)
+
         if not writeAll(path, data) then
             fs.delete(STAGE)
             print("Could not stage " .. name)
@@ -124,6 +195,7 @@ local function apply()
         end
 
         local ok, syntaxErr = validate(path)
+
         if not ok then
             fs.delete(STAGE)
             print("Validation failed: " .. name)
@@ -131,6 +203,9 @@ local function apply()
             return
         end
     end
+
+    print("All files verified as v" .. RELEASE_VERSION)
+    print("Clearing old installation...")
 
     local preserve = {
         [TEMP] = true,
@@ -145,11 +220,22 @@ local function apply()
     end
 
     for _, name in ipairs(FILES) do
-        fs.move(fs.combine(STAGE, name), name)
+        local source = fs.combine(STAGE, name)
+
+        if fs.exists(name) then
+            fs.delete(name)
+        end
+
+        fs.move(source, name)
     end
 
     fs.delete(STAGE)
-    writeAll(VERSION_FILE, tostring(RELEASE_VERSION))
+
+    if not writeAll(VERSION_FILE, tostring(RELEASE_VERSION)) then
+        print("Installed files but could not save version record")
+        return
+    end
+
     print("CAIRN update complete")
     print("Installed release: v" .. RELEASE_VERSION)
 end
