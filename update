@@ -1,157 +1,72 @@
 local args = {...}
 
-local RELEASE_VERSION = 12
+local RELEASE_VERSION = 13
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
-local TEMP_UPDATER = ".cairn_update_new"
-local STAGE_DIR = ".cairn_update_stage"
+local TEMP = ".cairn_update_new"
+local STAGE = ".cairn_update_stage"
 local VERSION_FILE = ".cairn_version"
 local STATE_FILE = ".cairn_drive_state"
+local FILES = {"startup", "cairn", "update"}
 
-local FILES = {
-    "startup",
-    "cairn",
-    "update"
-}
-
-local function runningDir()
-    if shell.getRunningProgram then
-        return fs.getDir(shell.getRunningProgram())
-    end
-    return shell.dir()
-end
-
-local ROOT = runningDir()
-
-local function fullPath(name)
-    if ROOT == "" then
-        return name
-    end
-    return fs.combine(ROOT, name)
-end
-
-local function readText(filePath)
-    if not fs.exists(filePath) then
-        return nil
-    end
-
-    local h = fs.open(filePath, "r")
-    if not h then
-        return nil
-    end
-
-    local data = h.readAll()
+local function readAll(path)
+    if not fs.exists(path) then return nil end
+    local h = fs.open(path, "r")
+    if not h then return nil end
+    local s = h.readAll()
     h.close()
-    return data
+    return s
 end
 
-local function writeText(filePath, data)
-    local h = fs.open(filePath, "w")
-    if not h then
-        return false
-    end
-
+local function writeAll(path, data)
+    local h = fs.open(path, "w")
+    if not h then return false end
     h.write(data)
     h.close()
     return true
 end
 
-local function token()
-    return tostring(os.getComputerID()) .. "_" .. tostring(math.floor(os.clock() * 1000))
+local function releaseOf(name, data)
+    local pattern = name == "update"
+        and "local%s+RELEASE_VERSION%s*=%s*(%d+)"
+        or "local%s+CAIRN_RELEASE%s*=%s*(%d+)"
+    local n = string.match(data, pattern)
+    return n and tonumber(n) or nil
 end
 
 local function fetch(name)
-    if not http or not http.get then
-        return nil, "HTTP API unavailable"
-    end
-
-    local ok, handle, err = pcall(
-        http.get,
-        BASE_URL .. name .. "?cairn=" .. token()
-    )
-
-    if not ok then
-        return nil, tostring(handle)
-    end
-
-    if not handle then
-        return nil, tostring(err or "HTTP request failed")
-    end
-
-    local data = handle.readAll()
-    handle.close()
-
-    if not data or data == "" then
-        return nil, "Empty response"
-    end
-
+    local token = tostring(os.getComputerID()) .. "_" .. tostring(math.floor(os.clock() * 1000))
+    local ok, h, err = pcall(http.get, BASE_URL .. name .. "?cairn=" .. token)
+    if not ok then return nil, tostring(h) end
+    if not h then return nil, tostring(err or "HTTP request failed") end
+    local data = h.readAll()
+    h.close()
+    if not data or data == "" then return nil, "Empty response" end
     return data
 end
 
-local function validate(filePath)
-    local fn, err = loadfile(filePath)
-
-    if not fn then
-        return false, err
-    end
-
-    return true
+local function validate(path)
+    local fn, err = loadfile(path)
+    return fn ~= nil, err
 end
 
-local function extractRelease(name, data)
-    local pattern
-
-    if name == "update" then
-        pattern = "local%s+RELEASE_VERSION%s*=%s*(%d+)"
-    else
-        pattern = "local%s+CAIRN_RELEASE%s*=%s*(%d+)"
-    end
-
-    local value = string.match(data, pattern)
-
-    if not value then
-        return nil
-    end
-
-    return tonumber(value)
-end
-
-local function installedVersion()
-    local data = readText(fullPath(VERSION_FILE))
-
-    if not data then
-        return "unknown"
-    end
-
-    data = string.gsub(data, "%s+", "")
-
-    if data == "" then
-        return "unknown"
-    end
-
-    return data
-end
-
-local function clearStage()
-    if fs.exists(fullPath(STAGE_DIR)) then
-        fs.delete(fullPath(STAGE_DIR))
-    end
+local function installed()
+    local v = readAll(VERSION_FILE)
+    return v and string.gsub(v, "%s+", "") or "unknown"
 end
 
 local function bootstrap()
     print("CAIRN updater")
-    print("Installed release: v" .. installedVersion())
+    print("Installed release: v" .. installed())
     print("Checking GitHub...")
 
     local data, err = fetch("update")
-
     if not data then
         print("Updater download failed")
         print(err or "")
         return
     end
 
-    local release = extractRelease("update", data)
-
+    local release = releaseOf("update", data)
     if not release then
         print("Downloaded updater has no release number")
         return
@@ -159,115 +74,82 @@ local function bootstrap()
 
     print("Downloaded updater release: v" .. release)
 
-    local temp = fullPath(TEMP_UPDATER)
-
-    if fs.exists(temp) then
-        fs.delete(temp)
-    end
-
-    if not writeText(temp, data) then
+    if fs.exists(TEMP) then fs.delete(TEMP) end
+    if not writeAll(TEMP, data) then
         print("Could not write temporary updater")
         return
     end
 
-    local ok, syntaxErr = validate(temp)
-
+    local ok, syntaxErr = validate(TEMP)
     if not ok then
-        fs.delete(temp)
+        fs.delete(TEMP)
         print("Downloaded updater failed validation")
         print(syntaxErr or "")
         return
     end
 
-    print("Running downloaded updater...")
-    shell.run(temp, "--apply")
-
-    if fs.exists(temp) then
-        fs.delete(temp)
-    end
+    shell.run(TEMP, "--apply")
+    if fs.exists(TEMP) then fs.delete(TEMP) end
 end
 
 local function apply()
     print("Applying CAIRN release v" .. RELEASE_VERSION)
 
-    clearStage()
-    fs.makeDir(fullPath(STAGE_DIR))
+    if fs.exists(STAGE) then fs.delete(STAGE) end
+    fs.makeDir(STAGE)
 
     for _, name in ipairs(FILES) do
         print("Downloading " .. name)
-
         local data, err = fetch(name)
-
         if not data then
-            clearStage()
+            fs.delete(STAGE)
             print("Download failed: " .. name)
             print(err or "")
             return
         end
 
-        local release = extractRelease(name, data)
-
+        local release = releaseOf(name, data)
         if release ~= RELEASE_VERSION then
-            clearStage()
+            fs.delete(STAGE)
             print("Release mismatch")
             print(name .. " is v" .. tostring(release) .. ", expected v" .. RELEASE_VERSION)
-            print("GitHub may still be updating")
             return
         end
 
-        local staged = fs.combine(fullPath(STAGE_DIR), name)
-
-        if not writeText(staged, data) then
-            clearStage()
+        local path = fs.combine(STAGE, name)
+        if not writeAll(path, data) then
+            fs.delete(STAGE)
             print("Could not stage " .. name)
             return
         end
 
-        local ok, syntaxErr = validate(staged)
-
+        local ok, syntaxErr = validate(path)
         if not ok then
-            clearStage()
+            fs.delete(STAGE)
             print("Validation failed: " .. name)
             print(syntaxErr or "")
             return
         end
     end
 
-    print("All files verified as v" .. RELEASE_VERSION)
-    print("Clearing old installation...")
-
     local preserve = {
-        [TEMP_UPDATER] = true,
-        [STAGE_DIR] = true,
+        [TEMP] = true,
+        [STAGE] = true,
         [STATE_FILE] = true
     }
 
-    for _, name in ipairs(fs.list(ROOT)) do
-        local target = fullPath(name)
-
-        if not preserve[name] and fs.getDrive(target) == "hdd" and not fs.isReadOnly(target) then
-            fs.delete(target)
+    for _, name in ipairs(fs.list("")) do
+        if not preserve[name] and fs.getDrive(name) == "hdd" and not fs.isReadOnly(name) then
+            fs.delete(name)
         end
     end
 
     for _, name in ipairs(FILES) do
-        local source = fs.combine(fullPath(STAGE_DIR), name)
-        local destination = fullPath(name)
-
-        if fs.exists(destination) then
-            fs.delete(destination)
-        end
-
-        fs.move(source, destination)
+        fs.move(fs.combine(STAGE, name), name)
     end
 
-    clearStage()
-
-    if not writeText(fullPath(VERSION_FILE), tostring(RELEASE_VERSION)) then
-        print("Installed files but could not save version record")
-        return
-    end
-
+    fs.delete(STAGE)
+    writeAll(VERSION_FILE, tostring(RELEASE_VERSION))
     print("CAIRN update complete")
     print("Installed release: v" .. RELEASE_VERSION)
 end

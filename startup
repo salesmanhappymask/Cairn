@@ -1,8 +1,7 @@
-local CAIRN_RELEASE = 12
+local CAIRN_RELEASE = 13
 
-if redstone and redstone.setBundledOutput then
-    pcall(redstone.setBundledOutput, "left", 0)
-    pcall(redstone.setBundledOutput, "right", 0)
+if redstone and redstone.setAnalogOutput then
+    pcall(redstone.setAnalogOutput, "right", 0)
 end
 
 sleep(0.5)
