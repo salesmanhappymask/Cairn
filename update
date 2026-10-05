@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 20
+local RELEASE_VERSION = 21
 local MAIN_ID = 2700
 local FOLLOWER_ID = 2701
 

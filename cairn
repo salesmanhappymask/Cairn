@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 20
+local CAIRN_RELEASE = 21
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -13,11 +13,9 @@ local SLAVE_STATE_FILE = ".cairn_drive1.tmp"
 local MAIN_STATE_VERSION = 2
 local SLAVE_STATE_VERSION = 1
 
-local MASTER_WIRED_SIDE = "bottom"
-local MASTER_WIRELESS_SIDE = "left"
-local SLAVE_WIRED_SIDE = "left"
-local SLAVE_WIRELESS_SIDE = "bottom"
-local SLAVE_DISK_SIDE = "right"
+local MASTER_WIRED_SIDE = "left"
+local MASTER_WIRELESS_SIDE = "top"
+local SLAVE_WIRED_SIDE = "bottom"
 
 local PULSE_TIME = 0.6
 local MOVE_SETTLE_TIME = 0.8
@@ -52,7 +50,7 @@ local moves = {
     },
     right = {
         owner = MASTER_ID,
-        side = "left",
+        side = "front",
         dx = -1,
         dy = 0,
         dz = 0,
@@ -60,7 +58,7 @@ local moves = {
     },
     up = {
         owner = SLAVE_ID,
-        side = "bottom",
+        side = "top",
         dx = 0,
         dy = 1,
         dz = 0,
@@ -68,7 +66,7 @@ local moves = {
     },
     down = {
         owner = MASTER_ID,
-        side = "top",
+        side = "bottom",
         dx = 0,
         dy = -1,
         dz = 0,
@@ -113,14 +111,14 @@ end
 
 local function clearMainOutputs()
     redstone.setOutput("back", false)
-    redstone.setOutput("left", false)
     redstone.setOutput("right", false)
-    redstone.setOutput("top", false)
+    redstone.setOutput("front", false)
+    redstone.setOutput("bottom", false)
 end
 
 local function clearSlaveOutputs()
     redstone.setOutput("back", false)
-    redstone.setOutput("bottom", false)
+    redstone.setOutput("top", false)
 end
 
 local function modemWireless(side)
@@ -151,19 +149,19 @@ end
 
 local function checkMainHardware()
     if peripheral.getType(MASTER_WIRED_SIDE) ~= "modem" then
-        return false, "Drive2 requires its wired modem on bottom."
+        return false, "Drive2 requires its wired modem on left."
     end
 
     if modemWireless(MASTER_WIRED_SIDE) ~= false then
-        return false, "Drive2 bottom modem must be wired."
+        return false, "Drive2 left modem must be wired."
     end
 
     if peripheral.getType(MASTER_WIRELESS_SIDE) ~= "modem" then
-        return false, "Drive2 requires its wireless modem on left."
+        return false, "Drive2 requires its wireless modem on top."
     end
 
     if modemWireless(MASTER_WIRELESS_SIDE) ~= true then
-        return false, "Drive2 left modem must be wireless."
+        return false, "Drive2 top modem must be wireless."
     end
 
     return true
@@ -171,19 +169,11 @@ end
 
 local function checkSlaveHardware()
     if peripheral.getType(SLAVE_WIRED_SIDE) ~= "modem" then
-        return false, "Drive1 requires its wired modem on left."
+        return false, "Drive1 requires its wired modem on bottom."
     end
 
     if modemWireless(SLAVE_WIRED_SIDE) ~= false then
-        return false, "Drive1 left modem must be wired."
-    end
-
-    if peripheral.getType(SLAVE_WIRELESS_SIDE) ~= "modem" then
-        return false, "Drive1 requires its wireless modem on bottom."
-    end
-
-    if modemWireless(SLAVE_WIRELESS_SIDE) ~= true then
-        return false, "Drive1 bottom modem must be wireless."
+        return false, "Drive1 bottom modem must be wired."
     end
 
     return true
@@ -1085,7 +1075,6 @@ local function runSlave()
     end
 
     openModem(SLAVE_WIRED_SIDE)
-    openModem(SLAVE_WIRELESS_SIDE)
 
     local state = loadSlaveState()
 
@@ -1109,12 +1098,10 @@ local function runSlave()
     print("ID: " .. os.getComputerID())
     print("")
     print("Facing: South")
-    print("Wired modem: left")
-    print("Wireless modem: bottom")
-    print("Disk drive: right")
+    print("Wired modem: bottom")
     print("")
     print("Back output: Forward / North")
-    print("Bottom output: Up")
+    print("Top output: Up")
     print("")
     print("Waiting for Drive2 master...")
 
@@ -1263,15 +1250,6 @@ local function runSlave()
                 end
             end
 
-        elseif
-            sender ~= MASTER_ID and
-            protocol == COMMAND_PROTOCOL
-        then
-            rednet.send(MASTER_ID, {
-                type = "wireless_forward",
-                sender = sender,
-                message = message
-            }, LINK_PROTOCOL)
         end
     end
 end

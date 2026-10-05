@@ -1,16 +1,16 @@
-local CAIRN_RELEASE = 20
+local CAIRN_RELEASE = 21
 
 local id = os.getComputerID()
 
 if redstone and redstone.setOutput then
     if id == 2700 then
         pcall(redstone.setOutput, "back", false)
-        pcall(redstone.setOutput, "left", false)
         pcall(redstone.setOutput, "right", false)
-        pcall(redstone.setOutput, "top", false)
+        pcall(redstone.setOutput, "front", false)
+        pcall(redstone.setOutput, "bottom", false)
     elseif id == 2701 then
         pcall(redstone.setOutput, "back", false)
-        pcall(redstone.setOutput, "bottom", false)
+        pcall(redstone.setOutput, "top", false)
     end
 end
 
