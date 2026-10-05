@@ -1,22 +1,23 @@
-local CAIRN_RELEASE = 19
+local CAIRN_RELEASE = 20
 
-local MAIN_ID = 2700
-local FOLLOWER_ID = 2701
+local MASTER_ID = 2700
+local SLAVE_ID = 2701
 
 local LINK_PROTOCOL = "cairn.drive.link"
 local COMMAND_PROTOCOL = "cairn.drive.command"
 local UPDATE_PROTOCOL = "cairn.drive.update"
 
 local MAIN_STATE_FILE = ".cairn_drive.tmp"
-local FOLLOWER_STATE_FILE = ".cairn_drive1.tmp"
+local SLAVE_STATE_FILE = ".cairn_drive1.tmp"
 
 local MAIN_STATE_VERSION = 2
-local FOLLOWER_STATE_VERSION = 1
+local SLAVE_STATE_VERSION = 1
 
-local MAIN_WIRED_SIDE = "bottom"
-local FOLLOWER_WIRED_SIDE = "left"
-local FOLLOWER_WIRELESS_SIDE = "top"
-local FOLLOWER_DISK_SIDE = "right"
+local MASTER_WIRED_SIDE = "bottom"
+local MASTER_WIRELESS_SIDE = "left"
+local SLAVE_WIRED_SIDE = "left"
+local SLAVE_WIRELESS_SIDE = "bottom"
+local SLAVE_DISK_SIDE = "right"
 
 local PULSE_TIME = 0.6
 local MOVE_SETTLE_TIME = 0.8
@@ -26,7 +27,7 @@ local MAX_RECOVERY_REBOOTS = 3
 
 local moves = {
     forward = {
-        owner = FOLLOWER_ID,
+        owner = SLAVE_ID,
         side = "back",
         dx = 0,
         dy = 0,
@@ -34,7 +35,7 @@ local moves = {
         world = "North"
     },
     back = {
-        owner = MAIN_ID,
+        owner = MASTER_ID,
         side = "back",
         dx = 0,
         dy = 0,
@@ -42,7 +43,7 @@ local moves = {
         world = "South"
     },
     left = {
-        owner = MAIN_ID,
+        owner = MASTER_ID,
         side = "right",
         dx = 1,
         dy = 0,
@@ -50,7 +51,7 @@ local moves = {
         world = "East"
     },
     right = {
-        owner = MAIN_ID,
+        owner = MASTER_ID,
         side = "left",
         dx = -1,
         dy = 0,
@@ -58,7 +59,7 @@ local moves = {
         world = "West"
     },
     up = {
-        owner = FOLLOWER_ID,
+        owner = SLAVE_ID,
         side = "bottom",
         dx = 0,
         dy = 1,
@@ -66,7 +67,7 @@ local moves = {
         world = "Up"
     },
     down = {
-        owner = MAIN_ID,
+        owner = MASTER_ID,
         side = "top",
         dx = 0,
         dy = -1,
@@ -75,7 +76,7 @@ local moves = {
     }
 }
 
-local followerMoves = {
+local slaveMoves = {
     forward = moves.forward,
     up = moves.up
 }
@@ -117,7 +118,7 @@ local function clearMainOutputs()
     redstone.setOutput("top", false)
 end
 
-local function clearFollowerOutputs()
+local function clearSlaveOutputs()
     redstone.setOutput("back", false)
     redstone.setOutput("bottom", false)
 end
@@ -149,32 +150,40 @@ local function openModem(side)
 end
 
 local function checkMainHardware()
-    if peripheral.getType(MAIN_WIRED_SIDE) ~= "modem" then
+    if peripheral.getType(MASTER_WIRED_SIDE) ~= "modem" then
         return false, "Drive2 requires its wired modem on bottom."
     end
 
-    if modemWireless(MAIN_WIRED_SIDE) ~= false then
+    if modemWireless(MASTER_WIRED_SIDE) ~= false then
         return false, "Drive2 bottom modem must be wired."
+    end
+
+    if peripheral.getType(MASTER_WIRELESS_SIDE) ~= "modem" then
+        return false, "Drive2 requires its wireless modem on left."
+    end
+
+    if modemWireless(MASTER_WIRELESS_SIDE) ~= true then
+        return false, "Drive2 left modem must be wireless."
     end
 
     return true
 end
 
-local function checkFollowerHardware()
-    if peripheral.getType(FOLLOWER_WIRED_SIDE) ~= "modem" then
+local function checkSlaveHardware()
+    if peripheral.getType(SLAVE_WIRED_SIDE) ~= "modem" then
         return false, "Drive1 requires its wired modem on left."
     end
 
-    if modemWireless(FOLLOWER_WIRED_SIDE) ~= false then
+    if modemWireless(SLAVE_WIRED_SIDE) ~= false then
         return false, "Drive1 left modem must be wired."
     end
 
-    if peripheral.getType(FOLLOWER_WIRELESS_SIDE) ~= "modem" then
-        return false, "Drive1 requires its wireless modem on top."
+    if peripheral.getType(SLAVE_WIRELESS_SIDE) ~= "modem" then
+        return false, "Drive1 requires its wireless modem on bottom."
     end
 
-    if modemWireless(FOLLOWER_WIRELESS_SIDE) ~= true then
-        return false, "Drive1 top modem must be wireless."
+    if modemWireless(SLAVE_WIRELESS_SIDE) ~= true then
+        return false, "Drive1 bottom modem must be wireless."
     end
 
     return true
@@ -199,12 +208,12 @@ local function loadMainState()
     return state
 end
 
-local function loadFollowerState()
-    local state = readTable(FOLLOWER_STATE_FILE)
+local function loadSlaveState()
+    local state = readTable(SLAVE_STATE_FILE)
 
-    if type(state) ~= "table" or state.version ~= FOLLOWER_STATE_VERSION then
+    if type(state) ~= "table" or state.version ~= SLAVE_STATE_VERSION then
         return {
-            version = FOLLOWER_STATE_VERSION,
+            version = SLAVE_STATE_VERSION,
             boot = 0,
             tx = nil
         }
@@ -213,8 +222,8 @@ local function loadFollowerState()
     return state
 end
 
-local function saveFollowerState(state)
-    return writeTable(FOLLOWER_STATE_FILE, state)
+local function saveSlaveState(state)
+    return writeTable(SLAVE_STATE_FILE, state)
 end
 
 local function askInteger(label)
@@ -276,7 +285,7 @@ local function drawRoute(state, action)
         print("")
         print("Move: " .. string.upper(action) .. " / " .. move.world)
 
-        if move.owner == MAIN_ID then
+        if move.owner == MASTER_ID then
             print("Controller: Drive2 " .. move.side)
         else
             print("Controller: Drive1 " .. move.side)
@@ -295,7 +304,7 @@ local function waitLinkType(expected, token, timeout)
             return nil
         end
 
-        if sender == FOLLOWER_ID and type(message) == "table" then
+        if sender == SLAVE_ID and type(message) == "table" then
             if message.type == expected then
                 if token == nil or message.token == token then
                     return message
@@ -307,14 +316,14 @@ local function waitLinkType(expected, token, timeout)
     return nil
 end
 
-local function pingFollowerOnce()
+local function pingSlaveOnce()
     local token =
         "ping:" ..
         tostring(os.getComputerID()) ..
         ":" ..
         tostring(math.floor(os.clock() * 1000))
 
-    rednet.send(FOLLOWER_ID, {
+    rednet.send(SLAVE_ID, {
         type = "ping",
         token = token
     }, LINK_PROTOCOL)
@@ -322,9 +331,9 @@ local function pingFollowerOnce()
     return waitLinkType("pong", token, LINK_TIMEOUT)
 end
 
-local function pingFollower()
+local function pingSlave()
     for attempt = 1, LINK_ATTEMPTS do
-        local reply = pingFollowerOnce()
+        local reply = pingSlaveOnce()
 
         if reply then
             return reply
@@ -336,9 +345,9 @@ local function pingFollower()
     return nil
 end
 
-local function prepareFollower(tx)
+local function prepareSlave(tx)
     for attempt = 1, LINK_ATTEMPTS do
-        rednet.send(FOLLOWER_ID, {
+        rednet.send(SLAVE_ID, {
             type = "prepare",
             token = tx.token,
             direction = tx.direction,
@@ -357,8 +366,8 @@ local function prepareFollower(tx)
     return false
 end
 
-local function queryFollowerTx(token)
-    rednet.send(FOLLOWER_ID, {
+local function querySlaveTx(token)
+    rednet.send(SLAVE_ID, {
         type = "tx_status",
         token = token
     }, LINK_PROTOCOL)
@@ -366,8 +375,8 @@ local function queryFollowerTx(token)
     return waitLinkType("tx_status", token, LINK_TIMEOUT)
 end
 
-local function commitFollower(token)
-    rednet.send(FOLLOWER_ID, {
+local function commitSlave(token)
+    rednet.send(SLAVE_ID, {
         type = "commit",
         token = token
     }, LINK_PROTOCOL)
@@ -405,7 +414,7 @@ local function commitMove(state)
     state.tx = nil
 
     saveMainState(state)
-    commitFollower(token)
+    commitSlave(token)
 
     term.clear()
     term.setCursorPos(1, 1)
@@ -482,7 +491,7 @@ local function confirmLocalMove(state)
     local tx = state.tx
 
     for attempt = 1, LINK_ATTEMPTS do
-        local reply = queryFollowerTx(tx.token)
+        local reply = querySlaveTx(tx.token)
 
         if reply and reply.present == true then
             return commitMove(state)
@@ -493,25 +502,25 @@ local function confirmLocalMove(state)
 
     recoveryFailure(
         state,
-        "Drive1 did not check in after Drive2 movement."
+        "Drive1 slave did not check in after Drive2 movement."
     )
 
     return false
 end
 
-local function sendFollowerExecute(tx)
-    rednet.send(FOLLOWER_ID, {
+local function sendSlaveExecute(tx)
+    rednet.send(SLAVE_ID, {
         type = "execute",
         token = tx.token,
         direction = tx.direction
     }, LINK_PROTOCOL)
 end
 
-local function confirmFollowerMove(state)
+local function confirmSlaveMove(state)
     local tx = state.tx
 
     for attempt = 1, LINK_ATTEMPTS do
-        local reply = queryFollowerTx(tx.token)
+        local reply = querySlaveTx(tx.token)
 
         if reply and reply.present == true then
             if reply.phase == "complete" then
@@ -519,12 +528,12 @@ local function confirmFollowerMove(state)
             end
 
             if reply.phase == "prepared" then
-                sendFollowerExecute(tx)
+                sendSlaveExecute(tx)
             end
         else
-            if pingFollowerOnce() then
-                if prepareFollower(tx) then
-                    sendFollowerExecute(tx)
+            if pingSlaveOnce() then
+                if prepareSlave(tx) then
+                    sendSlaveExecute(tx)
                 end
             end
         end
@@ -534,7 +543,7 @@ local function confirmFollowerMove(state)
 
     recoveryFailure(
         state,
-        "Drive1 did not confirm its movement transaction."
+        "Drive1 slave did not confirm its movement transaction."
     )
 
     return false
@@ -557,18 +566,18 @@ local function runTransaction(state)
     drawRoute(state, tx.direction)
 
     if tx.phase == "created" then
-        if not pingFollower() then
+        if not pingSlave() then
             recoveryFailure(
                 state,
-                "Drive1 is not responding on the wired network."
+                "Drive1 slave is not responding on the wired network."
             )
             return false
         end
 
-        if not prepareFollower(tx) then
+        if not prepareSlave(tx) then
             recoveryFailure(
                 state,
-                "Drive1 did not prepare the movement transaction."
+                "Drive1 slave did not prepare the movement transaction."
             )
             return false
         end
@@ -577,7 +586,7 @@ local function runTransaction(state)
         saveMainState(state)
     end
 
-    if move.owner == MAIN_ID then
+    if move.owner == MASTER_ID then
         if tx.phase == "prepared" then
             tx.phase = "local_issued"
             saveMainState(state)
@@ -596,11 +605,11 @@ local function runTransaction(state)
         if tx.phase == "prepared" then
             tx.phase = "remote_issued"
             saveMainState(state)
-            sendFollowerExecute(tx)
+            sendSlaveExecute(tx)
         end
 
         if tx.phase == "remote_issued" then
-            return confirmFollowerMove(state)
+            return confirmSlaveMove(state)
         end
     end
 
@@ -620,7 +629,7 @@ local function newMove(state, direction)
 
     state.tx = {
         token =
-            tostring(MAIN_ID) ..
+            tostring(MASTER_ID) ..
             ":" ..
             tostring(state.sequence) ..
             ":" ..
@@ -677,7 +686,7 @@ local function moveZTo(state, target)
     return false
 end
 
-local function waitForFollowerInteractive()
+local function waitForSlaveInteractive()
     while true do
         term.clear()
         term.setCursorPos(1, 1)
@@ -686,11 +695,11 @@ local function waitForFollowerInteractive()
         print("")
         print("Checking Drive1 / 2701...")
 
-        local reply = pingFollower()
+        local reply = pingSlave()
 
         if reply then
-            print("Drive1 online")
-            print("Drive1 release: v" .. tostring(reply.release))
+            print("Drive1 slave online")
+            print("Drive1 slave release: v" .. tostring(reply.release))
             sleep(0.75)
             return
         end
@@ -703,7 +712,7 @@ local function waitForFollowerInteractive()
 end
 
 local function newTrip()
-    waitForFollowerInteractive()
+    waitForSlaveInteractive()
 
     term.clear()
     term.setCursorPos(1, 1)
@@ -903,7 +912,7 @@ local function receiveRemoteUpdate(firstMessage)
 
     fs.makeDir(stage)
 
-    rednet.send(MAIN_ID, {
+    rednet.send(MASTER_ID, {
         type = "update_ack",
         stage = "begin",
         session = session
@@ -915,7 +924,7 @@ local function receiveRemoteUpdate(firstMessage)
         local sender, message, protocol = rednet.receive()
 
         if
-            sender == MAIN_ID and
+            sender == MASTER_ID and
             protocol == UPDATE_PROTOCOL and
             type(message) == "table" and
             message.session == session
@@ -942,7 +951,7 @@ local function receiveRemoteUpdate(firstMessage)
                 h.close()
                 received[name] = true
 
-                rednet.send(MAIN_ID, {
+                rednet.send(MASTER_ID, {
                     type = "update_ack",
                     stage = "file_begin",
                     session = session,
@@ -966,7 +975,7 @@ local function receiveRemoteUpdate(firstMessage)
                 h.write(data)
                 h.close()
 
-                rednet.send(MAIN_ID, {
+                rednet.send(MASTER_ID, {
                     type = "update_ack",
                     stage = "file_chunk",
                     session = session,
@@ -983,7 +992,7 @@ local function receiveRemoteUpdate(firstMessage)
                     return false, "validation failed: " .. tostring(err)
                 end
 
-                rednet.send(MAIN_ID, {
+                rednet.send(MASTER_ID, {
                     type = "update_ack",
                     stage = "file_end",
                     session = session,
@@ -1021,7 +1030,7 @@ local function receiveRemoteUpdate(firstMessage)
                     h.close()
                 end
 
-                rednet.send(MAIN_ID, {
+                rednet.send(MASTER_ID, {
                     type = "update_ack",
                     stage = "commit",
                     session = session
@@ -1036,7 +1045,7 @@ local function receiveRemoteUpdate(firstMessage)
     end
 end
 
-local function followerReply(state, messageType, token, extra)
+local function slaveReply(state, messageType, token, extra)
     local payload = extra or {}
 
     payload.type = messageType
@@ -1044,15 +1053,15 @@ local function followerReply(state, messageType, token, extra)
     payload.release = CAIRN_RELEASE
     payload.boot = state.boot
 
-    rednet.send(MAIN_ID, payload, LINK_PROTOCOL)
+    rednet.send(MASTER_ID, payload, LINK_PROTOCOL)
 end
 
-local function followerStatus(state, token)
+local function slaveStatus(state, token)
     local present =
         state.tx ~= nil and
         state.tx.token == token
 
-    followerReply(
+    slaveReply(
         state,
         "tx_status",
         token,
@@ -1065,60 +1074,60 @@ local function followerStatus(state, token)
     )
 end
 
-local function runFollower()
-    clearFollowerOutputs()
+local function runSlave()
+    clearSlaveOutputs()
 
-    local hardwareOk, hardwareError = checkFollowerHardware()
+    local hardwareOk, hardwareError = checkSlaveHardware()
 
     if not hardwareOk then
-        drawHardwareError("DRIVE1", hardwareError)
+        drawHardwareError("DRIVE1 SLAVE", hardwareError)
         return
     end
 
-    openModem(FOLLOWER_WIRED_SIDE)
-    openModem(FOLLOWER_WIRELESS_SIDE)
+    openModem(SLAVE_WIRED_SIDE)
+    openModem(SLAVE_WIRELESS_SIDE)
 
-    local state = loadFollowerState()
+    local state = loadSlaveState()
 
     state.boot = (state.boot or 0) + 1
 
     if
         state.tx and
-        state.tx.executor == FOLLOWER_ID and
+        state.tx.executor == SLAVE_ID and
         state.tx.phase == "executing"
     then
         state.tx.phase = "complete"
         state.tx.recovered = true
     end
 
-    saveFollowerState(state)
+    saveSlaveState(state)
 
     term.clear()
     term.setCursorPos(1, 1)
-    print("CAIRN DRIVE1")
+    print("CAIRN DRIVE1 SLAVE")
     print("Release v" .. CAIRN_RELEASE)
     print("ID: " .. os.getComputerID())
     print("")
     print("Facing: South")
     print("Wired modem: left")
-    print("Wireless modem: top")
+    print("Wireless modem: bottom")
     print("Disk drive: right")
     print("")
     print("Back output: Forward / North")
     print("Bottom output: Up")
     print("")
-    print("Waiting for Drive2...")
+    print("Waiting for Drive2 master...")
 
     while true do
         local sender, message, protocol = rednet.receive()
 
         if
-            sender == MAIN_ID and
+            sender == MASTER_ID and
             protocol == LINK_PROTOCOL and
             type(message) == "table"
         then
             if message.type == "ping" then
-                followerReply(
+                slaveReply(
                     state,
                     "pong",
                     message.token,
@@ -1141,10 +1150,10 @@ local function runFollower()
                         preparedBoot = state.boot
                     }
 
-                    saveFollowerState(state)
+                    saveSlaveState(state)
                 end
 
-                followerReply(
+                slaveReply(
                     state,
                     "prepared",
                     message.token,
@@ -1154,17 +1163,17 @@ local function runFollower()
                 )
 
             elseif message.type == "tx_status" then
-                followerStatus(state, message.token)
+                slaveStatus(state, message.token)
 
             elseif message.type == "execute" then
                 if
                     state.tx and
                     state.tx.token == message.token and
-                    state.tx.executor == FOLLOWER_ID and
-                    followerMoves[message.direction]
+                    state.tx.executor == SLAVE_ID and
+                    slaveMoves[message.direction]
                 then
                     if state.tx.phase == "complete" then
-                        followerReply(
+                        slaveReply(
                             state,
                             "move_complete",
                             message.token,
@@ -1174,12 +1183,12 @@ local function runFollower()
                         )
 
                     elseif state.tx.phase == "prepared" then
-                        local move = followerMoves[message.direction]
+                        local move = slaveMoves[message.direction]
 
                         state.tx.phase = "executing"
-                        saveFollowerState(state)
+                        saveSlaveState(state)
 
-                        followerReply(
+                        slaveReply(
                             state,
                             "execute_ack",
                             message.token,
@@ -1189,16 +1198,16 @@ local function runFollower()
                         )
 
                         sleep(0.15)
-                        clearFollowerOutputs()
+                        clearSlaveOutputs()
                         redstone.setOutput(move.side, true)
                         sleep(PULSE_TIME)
                         redstone.setOutput(move.side, false)
                         sleep(MOVE_SETTLE_TIME)
 
                         state.tx.phase = "complete"
-                        saveFollowerState(state)
+                        saveSlaveState(state)
 
-                        followerReply(
+                        slaveReply(
                             state,
                             "move_complete",
                             message.token,
@@ -1208,7 +1217,7 @@ local function runFollower()
                         )
 
                     elseif state.tx.phase == "executing" then
-                        followerReply(
+                        slaveReply(
                             state,
                             "execute_ack",
                             message.token,
@@ -1222,10 +1231,10 @@ local function runFollower()
             elseif message.type == "commit" then
                 if state.tx and state.tx.token == message.token then
                     state.tx = nil
-                    saveFollowerState(state)
+                    saveSlaveState(state)
                 end
 
-                followerReply(
+                slaveReply(
                     state,
                     "commit_ack",
                     message.token
@@ -1233,7 +1242,7 @@ local function runFollower()
             end
 
         elseif
-            sender == MAIN_ID and
+            sender == MASTER_ID and
             protocol == UPDATE_PROTOCOL and
             type(message) == "table" and
             message.type == "update_begin"
@@ -1242,7 +1251,7 @@ local function runFollower()
 
             if not success then
                 pcall(function()
-                    rednet.send(MAIN_ID, {
+                    rednet.send(MASTER_ID, {
                         type = "update_error",
                         session = message.session,
                         error = tostring(updateError)
@@ -1255,10 +1264,10 @@ local function runFollower()
             end
 
         elseif
-            sender ~= MAIN_ID and
+            sender ~= MASTER_ID and
             protocol == COMMAND_PROTOCOL
         then
-            rednet.send(MAIN_ID, {
+            rednet.send(MASTER_ID, {
                 type = "wireless_forward",
                 sender = sender,
                 message = message
@@ -1273,11 +1282,12 @@ local function runMain()
     local hardwareOk, hardwareError = checkMainHardware()
 
     if not hardwareOk then
-        drawHardwareError("DRIVE2", hardwareError)
+        drawHardwareError("DRIVE2 MASTER", hardwareError)
         return
     end
 
-    openModem(MAIN_WIRED_SIDE)
+    openModem(MASTER_WIRED_SIDE)
+    openModem(MASTER_WIRELESS_SIDE)
 
     local state = loadMainState()
 
@@ -1290,10 +1300,10 @@ end
 
 local id = os.getComputerID()
 
-if id == MAIN_ID then
+if id == MASTER_ID then
     runMain()
-elseif id == FOLLOWER_ID then
-    runFollower()
+elseif id == SLAVE_ID then
+    runSlave()
 else
     term.clear()
     term.setCursorPos(1, 1)
