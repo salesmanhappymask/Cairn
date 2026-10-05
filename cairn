@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 15
+local CAIRN_RELEASE = 16
 
 local MAIN_ID = 2700
 local FOLLOWER_ID = 2701

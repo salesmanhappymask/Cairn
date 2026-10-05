@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 15
+local RELEASE_VERSION = 16
 local MAIN_ID = 2700
 local FOLLOWER_ID = 2701
 
@@ -277,13 +277,150 @@ local function pushFollower(files)
     return true
 end
 
-local function bootstrap()
-    if os.getComputerID() ~= MAIN_ID then
-        print("Updates are authoritative on Drive2 only")
-        print("Run update on computer 2700")
+local function stageRelease()
+    if fs.exists(STAGE) then
+        fs.delete(STAGE)
+    end
+
+    fs.makeDir(STAGE)
+
+    local downloaded = {}
+
+    for _, name in ipairs(FILES) do
+        print("Downloading " .. name)
+
+        local data, err = fetch(name)
+
+        if not data then
+            fs.delete(STAGE)
+            return nil, "Download failed: " .. name .. ": " .. tostring(err or "")
+        end
+
+        local release = releaseOf(name, data)
+
+        if release ~= RELEASE_VERSION then
+            fs.delete(STAGE)
+            return nil,
+                "Release mismatch: " ..
+                name ..
+                " is v" ..
+                tostring(release) ..
+                ", expected v" ..
+                RELEASE_VERSION
+        end
+
+        local path = fs.combine(STAGE, name)
+
+        if not writeAll(path, data) then
+            fs.delete(STAGE)
+            return nil, "Could not stage " .. name
+        end
+
+        local ok, syntaxErr = validate(path)
+
+        if not ok then
+            fs.delete(STAGE)
+            return nil, "Validation failed: " .. name .. ": " .. tostring(syntaxErr or "")
+        end
+
+        downloaded[name] = data
+    end
+
+    return downloaded
+end
+
+local function installStagedFollower()
+    for _, name in ipairs(FILES) do
+        local source = fs.combine(STAGE, name)
+
+        if fs.exists(name) then
+            fs.delete(name)
+        end
+
+        fs.move(source, name)
+    end
+
+    if fs.exists(STAGE) then
+        fs.delete(STAGE)
+    end
+
+    writeAll(VERSION_FILE, tostring(RELEASE_VERSION))
+
+    print("Drive1 bootstrap complete")
+    print("Installed release: v" .. RELEASE_VERSION)
+    print("Rebooting...")
+    sleep(1)
+    os.reboot()
+end
+
+local function followerBootstrap()
+    print("CAIRN Drive1 bootstrap/recovery")
+    print("Installed release: v" .. installed())
+    print("Checking GitHub...")
+
+    local data, err = fetch("update")
+
+    if not data then
+        print("Updater download failed")
+        print(err or "")
         return
     end
 
+    local release = releaseOf("update", data)
+
+    if not release then
+        print("Downloaded updater has no release number")
+        return
+    end
+
+    print("Downloaded updater release: v" .. release)
+
+    if fs.exists(TEMP) then
+        fs.delete(TEMP)
+    end
+
+    if not writeAll(TEMP, data) then
+        print("Could not write temporary updater")
+        return
+    end
+
+    local ok, syntaxErr = validate(TEMP)
+
+    if not ok then
+        fs.delete(TEMP)
+        print("Downloaded updater failed validation")
+        print(syntaxErr or "")
+        return
+    end
+
+    print("Running follower bootstrap...")
+    shell.run(TEMP, "--apply-follower")
+
+    if fs.exists(TEMP) then
+        fs.delete(TEMP)
+    end
+end
+
+local function applyFollower()
+    if os.getComputerID() ~= FOLLOWER_ID then
+        print("Follower bootstrap is only valid on Drive1 / 2701")
+        return
+    end
+
+    print("Installing Drive1 release v" .. RELEASE_VERSION)
+
+    local downloaded, err = stageRelease()
+
+    if not downloaded then
+        print(err or "Follower staging failed")
+        return
+    end
+
+    print("All files verified as v" .. RELEASE_VERSION)
+    installStagedFollower()
+end
+
+local function bootstrapMain()
     print("CAIRN updater")
     print("Installed release: v" .. installed())
     print("Checking GitHub...")
@@ -331,62 +468,14 @@ local function bootstrap()
     end
 end
 
-local function apply()
-    if os.getComputerID() ~= MAIN_ID then
-        print("Updates are authoritative on Drive2 only")
-        return
-    end
-
+local function applyMain()
     print("Applying CAIRN release v" .. RELEASE_VERSION)
 
-    if fs.exists(STAGE) then
-        fs.delete(STAGE)
-    end
+    local downloaded, err = stageRelease()
 
-    fs.makeDir(STAGE)
-
-    local downloaded = {}
-
-    for _, name in ipairs(FILES) do
-        print("Downloading " .. name)
-
-        local data, err = fetch(name)
-
-        if not data then
-            fs.delete(STAGE)
-            print("Download failed: " .. name)
-            print(err or "")
-            return
-        end
-
-        local release = releaseOf(name, data)
-
-        if release ~= RELEASE_VERSION then
-            fs.delete(STAGE)
-            print("Release mismatch")
-            print(name .. " is v" .. tostring(release) .. ", expected v" .. RELEASE_VERSION)
-            print("GitHub may still be updating")
-            return
-        end
-
-        local path = fs.combine(STAGE, name)
-
-        if not writeAll(path, data) then
-            fs.delete(STAGE)
-            print("Could not stage " .. name)
-            return
-        end
-
-        local ok, syntaxErr = validate(path)
-
-        if not ok then
-            fs.delete(STAGE)
-            print("Validation failed: " .. name)
-            print(syntaxErr or "")
-            return
-        end
-
-        downloaded[name] = data
+    if not downloaded then
+        print(err or "Staging failed")
+        return
     end
 
     print("All files verified as v" .. RELEASE_VERSION)
@@ -399,6 +488,7 @@ local function apply()
         print("Drive1 synchronization failed")
         print(pushErr or "")
         print("Nothing was changed on Drive2")
+        print("If Drive1 is not yet bootstrapped, run update on Drive1 once")
         return
     end
 
@@ -444,8 +534,27 @@ local function apply()
     os.reboot()
 end
 
+local id = os.getComputerID()
+
 if args[1] == "--apply" then
-    apply()
+    if id ~= MAIN_ID then
+        print("Main apply is only valid on Drive2 / 2700")
+        return
+    end
+
+    applyMain()
+
+elseif args[1] == "--apply-follower" then
+    applyFollower()
+
 else
-    bootstrap()
+    if id == MAIN_ID then
+        bootstrapMain()
+    elseif id == FOLLOWER_ID then
+        followerBootstrap()
+    else
+        print("Unexpected computer ID: " .. id)
+        print("Expected Drive2 = 2700")
+        print("Expected Drive1 = 2701")
+    end
 end
