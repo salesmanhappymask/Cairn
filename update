@@ -1,8 +1,8 @@
 local args = {...}
 
-local RELEASE_VERSION = 21
-local MAIN_ID = 2700
-local FOLLOWER_ID = 2701
+local RELEASE_VERSION = 22
+local MASTER_ID = 2700
+local SLAVE_ID = 2701
 
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
 local UPDATE_PROTOCOL = "cairn.drive.update"
@@ -13,6 +13,8 @@ local VERSION_FILE = ".cairn_version"
 local STATE_FILE = ".cairn_drive.tmp"
 local FILES = {"startup", "cairn", "update"}
 local CHUNK_SIZE = 3000
+
+local MASTER_WIRED_SIDE = "left"
 
 local SIDES = {
     "top",
@@ -126,32 +128,26 @@ local function installed()
     return data
 end
 
-local function findWiredModem()
-    for _, side in ipairs(SIDES) do
-        if peripheral.getType(side) == "modem" then
-            local ok, wireless = pcall(peripheral.call, side, "isWireless")
-
-            if ok and wireless == false then
-                return side
-            end
-        end
+local function openMasterWired()
+    if peripheral.getType(MASTER_WIRED_SIDE) ~= "modem" then
+        return nil, "Drive2 requires its wired modem on left"
     end
 
-    return nil
-end
+    local ok, wireless = pcall(
+        peripheral.call,
+        MASTER_WIRED_SIDE,
+        "isWireless"
+    )
 
-local function openWired()
-    local side = findWiredModem()
-
-    if not side then
-        return nil
+    if not ok or wireless ~= false then
+        return nil, "Drive2 left modem is not a wired modem"
     end
 
-    if not rednet.isOpen(side) then
-        rednet.open(side)
+    if not rednet.isOpen(MASTER_WIRED_SIDE) then
+        rednet.open(MASTER_WIRED_SIDE)
     end
 
-    return side
+    return MASTER_WIRED_SIDE
 end
 
 local function waitAck(session, stage, name, index, timeout)
@@ -165,7 +161,7 @@ local function waitAck(session, stage, name, index, timeout)
             return false, "timeout"
         end
 
-        if sender == FOLLOWER_ID and type(message) == "table" then
+        if sender == SLAVE_ID and type(message) == "table" then
             if message.type == "update_error" and message.session == session then
                 return false, tostring(message.error or "Drive1 update error")
             end
@@ -185,11 +181,11 @@ local function waitAck(session, stage, name, index, timeout)
     return false, "timeout"
 end
 
-local function pushFollower(files)
-    local wiredSide = openWired()
+local function pushSlave(files)
+    local wiredSide, wiredError = openMasterWired()
 
     if not wiredSide then
-        return false, "No wired modem found on Drive2"
+        return false, wiredError or "Drive2 wired modem unavailable"
     end
 
     local session =
@@ -199,7 +195,7 @@ local function pushFollower(files)
         ":" ..
         tostring(math.floor(os.clock() * 1000))
 
-    rednet.send(FOLLOWER_ID, {
+    rednet.send(SLAVE_ID, {
         type = "update_begin",
         session = session,
         version = RELEASE_VERSION,
@@ -213,7 +209,7 @@ local function pushFollower(files)
     end
 
     for _, name in ipairs(FILES) do
-        rednet.send(FOLLOWER_ID, {
+        rednet.send(SLAVE_ID, {
             type = "file_begin",
             session = session,
             name = name
@@ -232,7 +228,7 @@ local function pushFollower(files)
         while offset <= #data do
             local chunk = string.sub(data, offset, offset + CHUNK_SIZE - 1)
 
-            rednet.send(FOLLOWER_ID, {
+            rednet.send(SLAVE_ID, {
                 type = "file_chunk",
                 session = session,
                 name = name,
@@ -250,7 +246,7 @@ local function pushFollower(files)
             index = index + 1
         end
 
-        rednet.send(FOLLOWER_ID, {
+        rednet.send(SLAVE_ID, {
             type = "file_end",
             session = session,
             name = name
@@ -263,7 +259,7 @@ local function pushFollower(files)
         end
     end
 
-    rednet.send(FOLLOWER_ID, {
+    rednet.send(SLAVE_ID, {
         type = "commit",
         session = session
     }, UPDATE_PROTOCOL)
@@ -353,7 +349,7 @@ local function installStagedFollower()
     os.reboot()
 end
 
-local function followerBootstrap()
+local function slaveBootstrap()
     print("CAIRN Drive1 bootstrap/recovery")
     print("Installed release: v" .. installed())
     print("Checking GitHub...")
@@ -393,17 +389,17 @@ local function followerBootstrap()
         return
     end
 
-    print("Running follower bootstrap...")
-    shell.run(TEMP, "--apply-follower")
+    print("Running slave bootstrap...")
+    shell.run(TEMP, "--apply-slave")
 
     if fs.exists(TEMP) then
         fs.delete(TEMP)
     end
 end
 
-local function applyFollower()
-    if os.getComputerID() ~= FOLLOWER_ID then
-        print("Follower bootstrap is only valid on Drive1 / 2701")
+local function applySlave()
+    if os.getComputerID() ~= SLAVE_ID then
+        print("Slave bootstrap is only valid on Drive1 / 2701")
         return
     end
 
@@ -479,9 +475,9 @@ local function applyMain()
     end
 
     print("All files verified as v" .. RELEASE_VERSION)
-    print("Synchronizing Drive1...")
+    print("Synchronizing Drive1 slave over wired link...")
 
-    local pushed, pushErr = pushFollower(downloaded)
+    local pushed, pushErr = pushSlave(downloaded)
 
     if not pushed then
         fs.delete(STAGE)
@@ -492,7 +488,7 @@ local function applyMain()
         return
     end
 
-    print("Drive1 synchronized")
+    print("Drive1 slave synchronized")
     print("Installing Drive2...")
 
     local preserve = {
@@ -537,21 +533,21 @@ end
 local id = os.getComputerID()
 
 if args[1] == "--apply" then
-    if id ~= MAIN_ID then
+    if id ~= MASTER_ID then
         print("Main apply is only valid on Drive2 / 2700")
         return
     end
 
     applyMain()
 
-elseif args[1] == "--apply-follower" then
-    applyFollower()
+elseif args[1] == "--apply-slave" then
+    applySlave()
 
 else
-    if id == MAIN_ID then
+    if id == MASTER_ID then
         bootstrapMain()
-    elseif id == FOLLOWER_ID then
-        followerBootstrap()
+    elseif id == SLAVE_ID then
+        slaveBootstrap()
     else
         print("Unexpected computer ID: " .. id)
         print("Expected Drive2 = 2700")

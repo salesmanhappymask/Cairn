@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 21
+local CAIRN_RELEASE = 22
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -10,8 +10,8 @@ local UPDATE_PROTOCOL = "cairn.drive.update"
 local MAIN_STATE_FILE = ".cairn_drive.tmp"
 local SLAVE_STATE_FILE = ".cairn_drive1.tmp"
 
-local MAIN_STATE_VERSION = 2
-local SLAVE_STATE_VERSION = 1
+local MAIN_STATE_VERSION = 3
+local SLAVE_STATE_VERSION = 2
 
 local MASTER_WIRED_SIDE = "left"
 local MASTER_WIRELESS_SIDE = "top"
@@ -34,7 +34,7 @@ local moves = {
     },
     back = {
         owner = MASTER_ID,
-        side = "back",
+        side = "front",
         dx = 0,
         dy = 0,
         dz = 1,
@@ -49,24 +49,24 @@ local moves = {
         world = "East"
     },
     right = {
-        owner = MASTER_ID,
-        side = "front",
+        owner = SLAVE_ID,
+        side = "left",
         dx = -1,
         dy = 0,
         dz = 0,
         world = "West"
     },
     up = {
-        owner = SLAVE_ID,
-        side = "top",
+        owner = MASTER_ID,
+        side = "bottom",
         dx = 0,
         dy = 1,
         dz = 0,
         world = "Up"
     },
     down = {
-        owner = MASTER_ID,
-        side = "bottom",
+        owner = SLAVE_ID,
+        side = "top",
         dx = 0,
         dy = -1,
         dz = 0,
@@ -76,7 +76,8 @@ local moves = {
 
 local slaveMoves = {
     forward = moves.forward,
-    up = moves.up
+    right = moves.right,
+    down = moves.down
 }
 
 local function readTable(path)
@@ -110,14 +111,17 @@ local function writeTable(path, value)
 end
 
 local function clearMainOutputs()
+    redstone.setOutput("front", false)
     redstone.setOutput("back", false)
     redstone.setOutput("right", false)
-    redstone.setOutput("front", false)
     redstone.setOutput("bottom", false)
 end
 
 local function clearSlaveOutputs()
+    redstone.setOutput("front", false)
     redstone.setOutput("back", false)
+    redstone.setOutput("left", false)
+    redstone.setOutput("right", false)
     redstone.setOutput("top", false)
 end
 
@@ -1097,11 +1101,12 @@ local function runSlave()
     print("Release v" .. CAIRN_RELEASE)
     print("ID: " .. os.getComputerID())
     print("")
-    print("Facing: South")
+    print("Facing: North")
     print("Wired modem: bottom")
     print("")
     print("Back output: Forward / North")
-    print("Top output: Up")
+    print("Left output: Right / West")
+    print("Top output: Down")
     print("")
     print("Waiting for Drive2 master...")
 
