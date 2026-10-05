@@ -1,19 +1,49 @@
-local CAIRN_RELEASE = 14
+local CAIRN_RELEASE = 15
+
+local MAIN_ID = 2700
+local FOLLOWER_ID = 2701
+
+local LINK_PROTOCOL = "cairn.drive.link"
+local COMMAND_PROTOCOL = "cairn.drive.command"
+local REPLY_PROTOCOL = "cairn.drive.reply"
+local UPDATE_PROTOCOL = "cairn.drive.update"
 
 local STATE_FILE = ".cairn_drive_state"
-local STATE_VERSION = 4
+local STATE_VERSION = 5
 local REBOOT_TIMEOUT = 3
+local FOLLOWER_ACK_TIMEOUT = 2
 
-local drive = {
-    forward = {side = "front", dx = 0, dy = 0, dz = -1},
-    back = {side = "back", dx = 0, dy = 0, dz = 1},
+local SIDES = {
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "front",
+    "back"
+}
+
+local mainMoves = {
+    forward = {side = "back", dx = 0, dy = 0, dz = -1},
+    up = {side = "bottom", dx = 0, dy = 1, dz = 0}
+}
+
+local followerMoves = {
     left = {side = "right", dx = -1, dy = 0, dz = 0},
     right = {side = "left", dx = 1, dy = 0, dz = 0},
-    up = {side = "bottom", dx = 0, dy = 1, dz = 0},
+    back = {side = "back", dx = 0, dy = 0, dz = 1},
     down = {side = "top", dx = 0, dy = -1, dz = 0}
 }
 
-local sequences = {
+local allMoves = {
+    forward = {owner = MAIN_ID, side = "back", dx = 0, dy = 0, dz = -1},
+    up = {owner = MAIN_ID, side = "bottom", dx = 0, dy = 1, dz = 0},
+    left = {owner = FOLLOWER_ID, side = "right", dx = -1, dy = 0, dz = 0},
+    right = {owner = FOLLOWER_ID, side = "left", dx = 1, dy = 0, dz = 0},
+    back = {owner = FOLLOWER_ID, side = "back", dx = 0, dy = 0, dz = 1},
+    down = {owner = FOLLOWER_ID, side = "top", dx = 0, dy = -1, dz = 0}
+}
+
+local testSequences = {
     [1] = {
         {direction = "up", count = 3},
         {direction = "forward", count = 3},
@@ -31,14 +61,39 @@ local sequences = {
     }
 }
 
-local SIDES = {
-    "top",
-    "bottom",
-    "left",
-    "right",
-    "front",
-    "back"
-}
+local function findWiredModem()
+    for _, side in ipairs(SIDES) do
+        if peripheral.getType(side) == "modem" then
+            local ok, wireless = pcall(peripheral.call, side, "isWireless")
+            if ok and wireless == false then
+                return side
+            end
+        end
+    end
+    return nil
+end
+
+local function openModem(side)
+    if side and peripheral.getType(side) == "modem" then
+        if not rednet.isOpen(side) then
+            rednet.open(side)
+        end
+        return true
+    end
+    return false
+end
+
+local function clearMainOutputs()
+    redstone.setOutput("back", false)
+    redstone.setOutput("bottom", false)
+end
+
+local function clearFollowerOutputs()
+    redstone.setOutput("right", false)
+    redstone.setOutput("left", false)
+    redstone.setOutput("back", false)
+    redstone.setOutput("top", false)
+end
 
 local function defaultState()
     return {
@@ -46,11 +101,13 @@ local function defaultState()
         x = 0,
         y = 0,
         z = 0,
-        active = nil,
-        pending = nil,
-        step = 1,
         phase = "idle",
-        direction = nil
+        direction = nil,
+        mode = nil,
+        queue = {},
+        index = 1,
+        returnAfter = false,
+        requester = nil
     }
 end
 
@@ -59,7 +116,6 @@ local function saveState(state)
     if not h then
         return false
     end
-
     h.write(textutils.serialize(state))
     h.close()
     return true
@@ -88,26 +144,20 @@ local function loadState()
     return state
 end
 
-local function allOff()
-    for _, side in ipairs(SIDES) do
-        redstone.setOutput(side, false)
-    end
-end
-
 local function atIdle(state)
     return state.x == 0 and state.y == 0 and state.z == 0
 end
 
-local function buildSequence(number)
-    local result = {}
+local function buildTest(number)
+    local queue = {}
 
-    for _, segment in ipairs(sequences[number]) do
+    for _, segment in ipairs(testSequences[number]) do
         for i = 1, segment.count do
-            result[#result + 1] = segment.direction
+            queue[#queue + 1] = segment.direction
         end
     end
 
-    return result
+    return queue
 end
 
 local function finishArmedMove(state)
@@ -115,7 +165,7 @@ local function finishArmedMove(state)
         return
     end
 
-    local move = drive[state.direction]
+    local move = allMoves[state.direction]
 
     if not move then
         state.phase = "idle"
@@ -127,11 +177,7 @@ local function finishArmedMove(state)
     state.x = state.x + move.dx
     state.y = state.y + move.dy
     state.z = state.z + move.dz
-
-    if state.active == 1 or state.active == 2 then
-        state.step = state.step + 1
-    end
-
+    state.index = state.index + 1
     state.phase = "idle"
     state.direction = nil
     saveState(state)
@@ -165,230 +211,818 @@ local function nextReturnMove(state)
     return nil
 end
 
-local function issueMove(state, direction)
-    local move = drive[direction]
+local function sendReply(id, message)
+    if id then
+        rednet.send(id, message, REPLY_PROTOCOL)
+    end
+end
 
-    if not move then
-        return false
+local function waitForFollowerAck(token)
+    local deadline = os.clock() + FOLLOWER_ACK_TIMEOUT
+
+    while os.clock() < deadline do
+        local remaining = deadline - os.clock()
+        local sender, message, protocol = rednet.receive(LINK_PROTOCOL, remaining)
+
+        if not sender then
+            return false
+        end
+
+        if sender == FOLLOWER_ID and type(message) == "table" then
+            if message.type == "move_ack" and message.token == token then
+                return true
+            end
+        end
     end
 
-    local ok, err = pcall(allOff)
+    return false
+end
 
-    if not ok then
-        term.clear()
-        term.setCursorPos(1, 1)
-        print("CAIRN LOCOMOTION")
-        print("")
-        print("Could not clear drive outputs")
-        print(tostring(err))
-        sleep(2)
-        return false
+local function pingFollower()
+    local token = tostring(os.getComputerID()) .. ":" .. tostring(math.floor(os.clock() * 1000))
+
+    rednet.send(FOLLOWER_ID, {
+        type = "ping",
+        token = token
+    }, LINK_PROTOCOL)
+
+    local deadline = os.clock() + 1.5
+
+    while os.clock() < deadline do
+        local remaining = deadline - os.clock()
+        local sender, message = rednet.receive(LINK_PROTOCOL, remaining)
+
+        if not sender then
+            return false
+        end
+
+        if sender == FOLLOWER_ID and type(message) == "table" then
+            if message.type == "pong" and message.token == token then
+                return true
+            end
+        end
     end
 
-    sleep(0.1)
+    return false
+end
 
-    state.phase = "armed"
-    state.direction = direction
-
-    if not saveState(state) then
-        term.clear()
-        term.setCursorPos(1, 1)
-        print("CAIRN LOCOMOTION")
-        print("")
-        print("Could not save movement state")
-        sleep(2)
-        return false
-    end
+local function showMoveScreen(state, direction)
+    local move = allMoves[direction]
 
     term.clear()
     term.setCursorPos(1, 1)
 
-    print("CAIRN LOCOMOTION")
+    print("CAIRN DRIVE")
     print("Release v" .. CAIRN_RELEASE)
+    print("")
+    print("Authoritative node: Drive2 / 2700")
     print("")
     print("Relative position")
     print("X: " .. state.x .. "  Y: " .. state.y .. "  Z: " .. state.z)
     print("")
     print("Moving: " .. string.upper(direction))
-    print("Computer side: " .. move.side)
+
+    if move.owner == MAIN_ID then
+        print("Executor: Drive2")
+    else
+        print("Executor: Drive1")
+    end
+
+    print("Output side: " .. move.side)
     print("")
     print("Waiting for carriage movement...")
+end
 
-    ok, err = pcall(redstone.setOutput, move.side, true)
+local function abortArmedMove(state, message)
+    state.phase = "idle"
+    state.direction = nil
+    state.mode = nil
+    state.queue = {}
+    state.index = 1
+    state.returnAfter = false
+    saveState(state)
+
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CAIRN DRIVE")
+    print("")
+    print(message)
+    print("")
+    print("Movement queue aborted")
+    sleep(2)
+end
+
+local function issueMove(state, direction)
+    local move = allMoves[direction]
+
+    if not move then
+        abortArmedMove(state, "Unknown movement command")
+        return false
+    end
+
+    local ok, err = pcall(clearMainOutputs)
 
     if not ok then
-        state.phase = "idle"
-        state.direction = nil
-        saveState(state)
-        pcall(allOff)
-
-        print("")
-        print("Drive output failed")
-        print(tostring(err))
-        sleep(2)
+        abortArmedMove(state, "Could not clear Drive2 outputs: " .. tostring(err))
         return false
+    end
+
+    state.phase = "armed"
+    state.direction = direction
+
+    if not saveState(state) then
+        abortArmedMove(state, "Could not save movement state")
+        return false
+    end
+
+    showMoveScreen(state, direction)
+
+    if move.owner == MAIN_ID then
+        ok, err = pcall(redstone.setOutput, move.side, true)
+
+        if not ok then
+            abortArmedMove(state, "Drive2 output failed: " .. tostring(err))
+            return false
+        end
+    else
+        local token =
+            tostring(os.getComputerID()) ..
+            ":" ..
+            tostring(state.index) ..
+            ":" ..
+            tostring(math.floor(os.clock() * 1000))
+
+        rednet.send(FOLLOWER_ID, {
+            type = "move",
+            token = token,
+            direction = direction
+        }, LINK_PROTOCOL)
+
+        if not waitForFollowerAck(token) then
+            abortArmedMove(state, "Drive1 did not acknowledge movement")
+            return false
+        end
     end
 
     sleep(REBOOT_TIMEOUT)
 
-    pcall(allOff)
+    pcall(clearMainOutputs)
 
     state.phase = "idle"
     state.direction = nil
+    state.mode = nil
+    state.queue = {}
+    state.index = 1
+    state.returnAfter = false
     saveState(state)
 
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CAIRN DRIVE")
     print("")
     print("No carriage reboot detected")
     print("Movement was not recorded")
-    print("")
-    print("Press Enter to return to menu")
-    read()
+    print("Queue aborted")
+    sleep(2)
 
     return false
 end
 
-local function startSequence(state, number)
-    if not atIdle(state) then
-        state.pending = number
-        state.active = "return"
-        state.step = 1
-    else
-        state.active = number
-        state.pending = nil
-        state.step = 1
-    end
-
+local function beginQueue(state, mode, queue, returnAfter, requester)
+    state.mode = mode
+    state.queue = queue
+    state.index = 1
+    state.returnAfter = returnAfter == true
+    state.requester = requester
+    state.phase = "idle"
+    state.direction = nil
     saveState(state)
 end
 
-local function handleActive(state)
-    if state.active == 1 or state.active == 2 then
-        local sequence = buildSequence(state.active)
+local function completeQueue(state)
+    local requester = state.requester
+    local mode = state.mode
 
-        if state.step <= #sequence then
-            return issueMove(state, sequence[state.step])
-        end
-
-        state.active = "return"
-        state.step = 1
+    if state.returnAfter and not atIdle(state) then
+        state.mode = "return"
+        state.queue = {}
+        state.index = 1
+        state.returnAfter = false
         saveState(state)
         return true
     end
 
-    if state.active == "return" then
-        local direction = nextReturnMove(state)
+    state.mode = nil
+    state.queue = {}
+    state.index = 1
+    state.returnAfter = false
+    state.requester = nil
+    saveState(state)
 
-        if direction then
-            return issueMove(state, direction)
-        end
-
-        local pending = state.pending
-
-        state.active = nil
-        state.pending = nil
-        state.step = 1
-        saveState(state)
-
-        if pending == 1 or pending == 2 then
-            startSequence(state, pending)
-            return true
-        end
-
-        return true
+    if requester then
+        sendReply(requester, {
+            ok = true,
+            type = "complete",
+            mode = mode,
+            x = state.x,
+            y = state.y,
+            z = state.z
+        })
     end
 
     return false
 end
 
-local function showMenu(state)
+local function processActive(state)
+    if state.mode == "return" then
+        local direction = nextReturnMove(state)
+
+        if direction then
+            issueMove(state, direction)
+            return
+        end
+
+        completeQueue(state)
+        return
+    end
+
+    if state.index <= #state.queue then
+        issueMove(state, state.queue[state.index])
+        return
+    end
+
+    completeQueue(state)
+end
+
+local function normalizeDirection(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    value = string.lower(value)
+
+    if allMoves[value] then
+        return value
+    end
+
+    if value == "backward" or value == "backwards" then
+        return "back"
+    end
+
+    return nil
+end
+
+local function statusPayload(state, followerOnline, wiredSide)
+    return {
+        ok = true,
+        type = "status",
+        release = CAIRN_RELEASE,
+        id = MAIN_ID,
+        label = "Drive2",
+        follower = FOLLOWER_ID,
+        followerOnline = followerOnline,
+        wiredSide = wiredSide,
+        busy = state.mode ~= nil,
+        mode = state.mode,
+        x = state.x,
+        y = state.y,
+        z = state.z
+    }
+end
+
+local function handleWirelessCommand(sender, message, state, followerOnline, wiredSide)
+    if sender == FOLLOWER_ID then
+        return false
+    end
+
+    if type(message) == "string" then
+        local direction = normalizeDirection(message)
+
+        if direction then
+            if state.mode ~= nil then
+                sendReply(sender, {ok = false, error = "busy"})
+                return false
+            end
+
+            beginQueue(state, "external", {direction}, false, sender)
+            sendReply(sender, {ok = true, type = "accepted", count = 1})
+            return true
+        end
+
+        if string.lower(message) == "status" then
+            sendReply(sender, statusPayload(state, followerOnline, wiredSide))
+            return false
+        end
+    end
+
+    if type(message) ~= "table" then
+        sendReply(sender, {ok = false, error = "invalid command"})
+        return false
+    end
+
+    local command = message.command or message.type
+
+    if command == "status" then
+        sendReply(sender, statusPayload(state, followerOnline, wiredSide))
+        return false
+    end
+
+    if command == "return" then
+        if state.mode ~= nil then
+            sendReply(sender, {ok = false, error = "busy"})
+            return false
+        end
+
+        if atIdle(state) then
+            sendReply(sender, {ok = true, type = "complete", x = 0, y = 0, z = 0})
+            return false
+        end
+
+        state.mode = "return"
+        state.queue = {}
+        state.index = 1
+        state.returnAfter = false
+        state.requester = sender
+        saveState(state)
+        sendReply(sender, {ok = true, type = "accepted"})
+        return true
+    end
+
+    if command == "test" then
+        local number = tonumber(message.number)
+
+        if number ~= 1 and number ~= 2 then
+            sendReply(sender, {ok = false, error = "invalid test"})
+            return false
+        end
+
+        if state.mode ~= nil then
+            sendReply(sender, {ok = false, error = "busy"})
+            return false
+        end
+
+        if not atIdle(state) then
+            sendReply(sender, {ok = false, error = "not at idle"})
+            return false
+        end
+
+        beginQueue(state, "test" .. number, buildTest(number), true, sender)
+        sendReply(sender, {ok = true, type = "accepted"})
+        return true
+    end
+
+    if command == "move" then
+        if state.mode ~= nil then
+            sendReply(sender, {ok = false, error = "busy"})
+            return false
+        end
+
+        local queue = {}
+
+        if type(message.moves) == "table" then
+            for _, value in ipairs(message.moves) do
+                local direction = normalizeDirection(value)
+
+                if not direction then
+                    sendReply(sender, {ok = false, error = "invalid direction"})
+                    return false
+                end
+
+                queue[#queue + 1] = direction
+            end
+        else
+            local direction = normalizeDirection(message.direction)
+
+            if not direction then
+                sendReply(sender, {ok = false, error = "invalid direction"})
+                return false
+            end
+
+            local count = tonumber(message.count) or 1
+            count = math.floor(count)
+
+            if count < 1 or count > 4096 then
+                sendReply(sender, {ok = false, error = "invalid count"})
+                return false
+            end
+
+            for i = 1, count do
+                queue[#queue + 1] = direction
+            end
+        end
+
+        if #queue == 0 then
+            sendReply(sender, {ok = false, error = "empty movement queue"})
+            return false
+        end
+
+        beginQueue(
+            state,
+            "external",
+            queue,
+            message.returnAfter == true,
+            sender
+        )
+
+        sendReply(sender, {
+            ok = true,
+            type = "accepted",
+            count = #queue
+        })
+
+        return true
+    end
+
+    sendReply(sender, {ok = false, error = "unknown command"})
+    return false
+end
+
+local function drawMainMenu(state, followerOnline, wiredSide, wirelessOnline)
     term.clear()
     term.setCursorPos(1, 1)
 
-    print("CAIRN LOCOMOTION TEST")
+    print("CAIRN DRIVE CONTROL")
     print("Release v" .. CAIRN_RELEASE)
     print("")
-    print("Relative position")
+    print("Drive2  ID 2700  MAIN")
+    print("Drive1  ID 2701  FOLLOWER")
+    print("")
+    print("Wired: " .. (wiredSide or "NOT FOUND"))
+    print("Wireless top: " .. (wirelessOnline and "ONLINE" or "OFFLINE"))
+    print("Drive1: " .. (followerOnline and "ONLINE" or "OFFLINE"))
+    print("")
+    print("Position")
     print("X: " .. state.x .. "  Y: " .. state.y .. "  Z: " .. state.z)
     print("")
+    print("1 - Short movement test")
+    print("2 - Full movement test")
 
-    if atIdle(state) then
-        print("Status: IDLE")
-    else
-        print("Status: OFFSET FROM IDLE")
+    if not atIdle(state) then
+        print("R - Return to idle")
     end
 
-    print("")
-    print("1 - Short movement test")
-    print("    Up 3, Forward 3, Back 6,")
-    print("    Forward 3, Down 3")
-    print("")
-    print("2 - Full movement test")
-    print("    Up 5, Forward 10, Left 10,")
-    print("    Back 10, Right 10, Down 5")
-    print("")
+    print("P - Ping Drive1")
+    print("U - Update both drive computers")
     print("Q - Exit")
     print("")
-    write("> ")
-
-    return string.lower(read() or "")
+    print("Wireless commands remain enabled")
 end
 
-if not redstone or type(redstone.setOutput) ~= "function" then
-    print("CAIRN LOCOMOTION")
-    print("")
-    print("Redstone API unavailable")
-    return
-end
+local function receiveRemoteUpdate(firstMessage)
+    local session = firstMessage.session
+    local version = firstMessage.version
+    local expected = firstMessage.files
 
-local ok, err = pcall(allOff)
+    if type(session) ~= "string" or type(version) ~= "number" or type(expected) ~= "table" then
+        return false, "invalid update begin"
+    end
 
-if not ok then
-    print("CAIRN LOCOMOTION")
-    print("")
-    print("Could not initialize drive outputs")
-    print(tostring(err))
-    return
-end
+    local stage = ".cairn_remote_stage"
 
-local state = loadState()
+    if fs.exists(stage) then
+        fs.delete(stage)
+    end
 
-if state.phase == "armed" then
-    finishArmedMove(state)
-end
+    fs.makeDir(stage)
 
-while true do
-    state = loadState()
+    rednet.send(MAIN_ID, {
+        type = "update_ack",
+        stage = "begin",
+        session = session
+    }, UPDATE_PROTOCOL)
 
-    if state.active ~= nil then
-        local continuing = handleActive(state)
+    local received = {}
 
-        if continuing then
-            sleep(0.1)
-        else
-            state = loadState()
+    while true do
+        local sender, message, protocol = rednet.receive()
 
-            if state.active ~= nil then
-                return
+        if sender == MAIN_ID and protocol == UPDATE_PROTOCOL and type(message) == "table" then
+            if message.session == session then
+                if message.type == "file_begin" then
+                    local name = message.name
+
+                    if type(name) ~= "string" then
+                        return false, "invalid file name"
+                    end
+
+                    local path = fs.combine(stage, name)
+
+                    if fs.exists(path) then
+                        fs.delete(path)
+                    end
+
+                    local h = fs.open(path, "w")
+
+                    if not h then
+                        return false, "could not create staged file"
+                    end
+
+                    h.close()
+                    received[name] = true
+
+                    rednet.send(MAIN_ID, {
+                        type = "update_ack",
+                        stage = "file_begin",
+                        session = session,
+                        name = name
+                    }, UPDATE_PROTOCOL)
+
+                elseif message.type == "file_chunk" then
+                    local name = message.name
+                    local data = message.data
+
+                    if not received[name] or type(data) ~= "string" then
+                        return false, "invalid file chunk"
+                    end
+
+                    local h = fs.open(fs.combine(stage, name), "a")
+
+                    if not h then
+                        return false, "could not append staged file"
+                    end
+
+                    h.write(data)
+                    h.close()
+
+                    rednet.send(MAIN_ID, {
+                        type = "update_ack",
+                        stage = "file_chunk",
+                        session = session,
+                        name = name,
+                        index = message.index
+                    }, UPDATE_PROTOCOL)
+
+                elseif message.type == "file_end" then
+                    local name = message.name
+                    local path = fs.combine(stage, name)
+                    local fn, err = loadfile(path)
+
+                    if not fn then
+                        return false, "validation failed: " .. tostring(err)
+                    end
+
+                    rednet.send(MAIN_ID, {
+                        type = "update_ack",
+                        stage = "file_end",
+                        session = session,
+                        name = name
+                    }, UPDATE_PROTOCOL)
+
+                elseif message.type == "commit" then
+                    for _, name in ipairs(expected) do
+                        if not received[name] or not fs.exists(fs.combine(stage, name)) then
+                            return false, "missing staged file: " .. tostring(name)
+                        end
+                    end
+
+                    for _, name in ipairs(expected) do
+                        local source = fs.combine(stage, name)
+
+                        if fs.exists(name) then
+                            fs.delete(name)
+                        end
+
+                        fs.move(source, name)
+                    end
+
+                    if fs.exists(stage) then
+                        fs.delete(stage)
+                    end
+
+                    local h = fs.open(".cairn_version", "w")
+
+                    if h then
+                        h.write(tostring(version))
+                        h.close()
+                    end
+
+                    rednet.send(MAIN_ID, {
+                        type = "update_ack",
+                        stage = "commit",
+                        session = session
+                    }, UPDATE_PROTOCOL)
+
+                    sleep(0.5)
+                    os.reboot()
+                    return true
+                end
             end
         end
-    elseif not atIdle(state) then
-        state.active = "return"
-        state.pending = nil
-        state.step = 1
-        saveState(state)
-    else
-        local choice = showMenu(state)
+    end
+end
 
-        if choice == "1" then
-            startSequence(state, 1)
-        elseif choice == "2" then
-            startSequence(state, 2)
-        elseif choice == "q" then
-            allOff()
-            term.clear()
-            term.setCursorPos(1, 1)
-            print("CAIRN locomotion offline")
-            return
+local function runFollower()
+    local wiredSide = findWiredModem()
+
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("CAIRN DRIVE1")
+    print("Release v" .. CAIRN_RELEASE)
+    print("ID: " .. os.getComputerID())
+    print("")
+
+    local ok, err = pcall(clearFollowerOutputs)
+
+    if not ok then
+        print("Output initialization failed")
+        print(tostring(err))
+        return
+    end
+
+    if not wiredSide then
+        print("No wired modem found")
+        return
+    end
+
+    openModem(wiredSide)
+
+    print("Wired modem: " .. wiredSide)
+    print("Waiting for Drive2...")
+
+    while true do
+        local sender, message, protocol = rednet.receive()
+
+        if sender == MAIN_ID and type(message) == "table" then
+            if protocol == LINK_PROTOCOL then
+                if message.type == "ping" then
+                    rednet.send(MAIN_ID, {
+                        type = "pong",
+                        token = message.token,
+                        release = CAIRN_RELEASE
+                    }, LINK_PROTOCOL)
+
+                elseif message.type == "move" then
+                    local direction = message.direction
+                    local move = followerMoves[direction]
+
+                    if move then
+                        clearFollowerOutputs()
+
+                        rednet.send(MAIN_ID, {
+                            type = "move_ack",
+                            token = message.token,
+                            direction = direction
+                        }, LINK_PROTOCOL)
+
+                        sleep(0.2)
+                        redstone.setOutput(move.side, true)
+                        sleep(REBOOT_TIMEOUT)
+                        clearFollowerOutputs()
+                    else
+                        rednet.send(MAIN_ID, {
+                            type = "move_reject",
+                            token = message.token
+                        }, LINK_PROTOCOL)
+                    end
+                end
+
+            elseif protocol == UPDATE_PROTOCOL and message.type == "update_begin" then
+                local success, updateErr = receiveRemoteUpdate(message)
+
+                if not success then
+                    pcall(function()
+                        rednet.send(MAIN_ID, {
+                            type = "update_error",
+                            session = message.session,
+                            error = tostring(updateErr)
+                        }, UPDATE_PROTOCOL)
+                    end)
+
+                    if fs.exists(".cairn_remote_stage") then
+                        fs.delete(".cairn_remote_stage")
+                    end
+                end
+            end
         end
     end
+end
+
+local function runMain()
+    local wiredSide = findWiredModem()
+    local wirelessOnline = false
+
+    local ok, err = pcall(clearMainOutputs)
+
+    if not ok then
+        print("Drive2 output initialization failed")
+        print(tostring(err))
+        return
+    end
+
+    if wiredSide then
+        openModem(wiredSide)
+    end
+
+    if peripheral.getType("top") == "modem" then
+        local wirelessOk, wireless = pcall(peripheral.call, "top", "isWireless")
+
+        if wirelessOk and wireless == true then
+            openModem("top")
+            wirelessOnline = true
+        end
+    end
+
+    local state = loadState()
+
+    if state.phase == "armed" then
+        finishArmedMove(state)
+    end
+
+    local followerOnline = false
+
+    if wiredSide then
+        followerOnline = pingFollower()
+    end
+
+    while true do
+        state = loadState()
+
+        if state.mode ~= nil then
+            processActive(state)
+        else
+            drawMainMenu(state, followerOnline, wiredSide, wirelessOnline)
+
+            local event, p1, p2, p3 = os.pullEvent()
+
+            if event == "char" then
+                local choice = string.lower(p1)
+
+                if choice == "1" then
+                    if not atIdle(state) then
+                        term.setCursorPos(1, 19)
+                        print("Return to idle before running test")
+                        sleep(1.5)
+                    else
+                        beginQueue(state, "test1", buildTest(1), true, nil)
+                    end
+
+                elseif choice == "2" then
+                    if not atIdle(state) then
+                        term.setCursorPos(1, 19)
+                        print("Return to idle before running test")
+                        sleep(1.5)
+                    else
+                        beginQueue(state, "test2", buildTest(2), true, nil)
+                    end
+
+                elseif choice == "r" and not atIdle(state) then
+                    state.mode = "return"
+                    state.queue = {}
+                    state.index = 1
+                    state.returnAfter = false
+                    state.requester = nil
+                    saveState(state)
+
+                elseif choice == "p" then
+                    followerOnline = wiredSide and pingFollower() or false
+
+                elseif choice == "u" then
+                    shell.run("update")
+
+                elseif choice == "q" then
+                    clearMainOutputs()
+                    term.clear()
+                    term.setCursorPos(1, 1)
+                    print("CAIRN Drive2 offline")
+                    return
+                end
+
+            elseif event == "rednet_message" then
+                local sender = p1
+                local message = p2
+                local protocol = p3
+
+                if protocol == COMMAND_PROTOCOL and sender ~= FOLLOWER_ID then
+                    local started = handleWirelessCommand(
+                        sender,
+                        message,
+                        state,
+                        followerOnline,
+                        wiredSide
+                    )
+
+                    if started then
+                        followerOnline = wiredSide and pingFollower() or false
+                    end
+                end
+            end
+        end
+    end
+end
+
+local id = os.getComputerID()
+
+if id == MAIN_ID then
+    runMain()
+elseif id == FOLLOWER_ID then
+    runFollower()
+else
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CAIRN DRIVE")
+    print("")
+    print("Unexpected computer ID: " .. id)
+    print("Expected Drive2 = 2700")
+    print("Expected Drive1 = 2701")
 end

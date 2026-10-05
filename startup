@@ -1,17 +1,16 @@
-local CAIRN_RELEASE = 14
+local CAIRN_RELEASE = 15
 
-local SIDES = {
-    "top",
-    "bottom",
-    "left",
-    "right",
-    "front",
-    "back"
-}
+local id = os.getComputerID()
 
 if redstone and redstone.setOutput then
-    for _, side in ipairs(SIDES) do
-        pcall(redstone.setOutput, side, false)
+    if id == 2700 then
+        pcall(redstone.setOutput, "back", false)
+        pcall(redstone.setOutput, "bottom", false)
+    elseif id == 2701 then
+        pcall(redstone.setOutput, "right", false)
+        pcall(redstone.setOutput, "left", false)
+        pcall(redstone.setOutput, "back", false)
+        pcall(redstone.setOutput, "top", false)
     end
 end
 
