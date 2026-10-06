@@ -1,10 +1,12 @@
-local CAIRN_RELEASE = 25
+local CAIRN_RELEASE = 26
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
+local CONTROL_ID = 2705
 
 local LINK_PROTOCOL = "cairn.drive.link"
-local COMMAND_PROTOCOL = "cairn.drive.command"
+local CONTROL_PROTOCOL = "cairn.nav.command"
+local CONTROL_REPLY_PROTOCOL = "cairn.nav.reply"
 local UPDATE_PROTOCOL = "cairn.drive.update"
 
 local MAIN_STATE_FILE = "cairn_drive_state"
@@ -12,7 +14,7 @@ local SLAVE_STATE_FILE = "cairn_drive1_state"
 local LEGACY_MAIN_STATE_FILE = ".cairn_drive.tmp"
 local LEGACY_SLAVE_STATE_FILE = ".cairn_drive1.tmp"
 
-local MAIN_STATE_VERSION = 3
+local MAIN_STATE_VERSION = 4
 local SLAVE_STATE_VERSION = 2
 
 local MASTER_WIRED_SIDE = "left"
@@ -77,7 +79,6 @@ local moves = {
 }
 
 local slaveMoves = {
-    forward = moves.forward,
     right = moves.right,
     down = moves.down
 }
@@ -219,9 +220,27 @@ local function loadMainState()
         return nil
     end
 
+    if state.version == 3 then
+        state.version = MAIN_STATE_VERSION
+        state.paused = false
+        state.routeMode = state.routeMode or "roundtrip"
+        state.lastCommandToken = nil
+        state.lastCommandReply = nil
+        saveMainState(state)
+        return state
+    end
+
     if state.version ~= MAIN_STATE_VERSION then
         fs.delete(MAIN_STATE_FILE)
         return nil
+    end
+
+    if state.paused == nil then
+        state.paused = false
+    end
+
+    if not state.routeMode then
+        state.routeMode = "idle"
     end
 
     return state
@@ -276,28 +295,33 @@ local function drawRoute(state, action)
     print("CAIRN NAVIGATION")
     print("Release v" .. CAIRN_RELEASE)
     print("")
-    print("Current")
+    print("Drive2 MASTER / 2700")
+    print("Controller / 2705")
+    print("")
     print(
-        "X " ..
+        "Current X " ..
         state.current.x ..
-        "   Y " ..
+        "  Y " ..
         state.current.y ..
-        "   Z " ..
+        "  Z " ..
         state.current.z
     )
-    print("")
-    print("Destination")
-    print(
-        "X " ..
-        state.destination.x ..
-        "   Y " ..
-        state.destination.y ..
-        "   Z " ..
-        state.destination.z
-    )
-    print("")
-    print("Cruise Y: " .. state.cruise)
-    print("Stage: " .. state.stage)
+
+    if state.destination then
+        print(
+            "Dest    X " ..
+            state.destination.x ..
+            "  Y " ..
+            state.destination.y ..
+            "  Z " ..
+            state.destination.z
+        )
+    end
+
+    print("Cruise Y: " .. tostring(state.cruise or state.current.y))
+    print("Mode: " .. tostring(state.routeMode or "idle"))
+    print("Stage: " .. tostring(state.stage or "idle"))
+    print("Paused: " .. (state.paused and "YES" or "NO"))
 
     if action then
         local move = moves[action]
@@ -705,7 +729,7 @@ local function waitForSlaveInteractive()
     end
 end
 
-local function newTrip()
+local function initializeState()
     waitForSlaveInteractive()
 
     term.clear()
@@ -714,61 +738,39 @@ local function newTrip()
     print("CAIRN NAVIGATION")
     print("Release v" .. CAIRN_RELEASE)
     print("")
-    print("Forward = North = -Z")
-    print("Backward = South = +Z")
-    print("Left = East = +X")
-    print("Right = West = -X")
-    print("")
-    print("Enter current coordinates")
-
-    local sx = askInteger("X")
-    local sy = askInteger("Y")
-    local sz = askInteger("Z")
-
-    print("")
-    print("Enter destination coordinates")
-
-    local dx = askInteger("X")
-    local dy = askInteger("Y")
-    local dz = askInteger("Z")
-
+    print("Enter platform current coordinates")
+    print("These become Drive2's authoritative position.")
     print("")
 
-    local cruise
-
-    while true do
-        cruise = askInteger("Cruise altitude Y")
-
-        if cruise >= sy and cruise >= dy then
-            break
-        end
-
-        print(
-            "Cruise altitude must be at or above current and destination Y."
-        )
-    end
+    local x = askInteger("X")
+    local y = askInteger("Y")
+    local z = askInteger("Z")
 
     local state = {
         version = MAIN_STATE_VERSION,
         start = {
-            x = sx,
-            y = sy,
-            z = sz
+            x = x,
+            y = y,
+            z = z
         },
         destination = {
-            x = dx,
-            y = dy,
-            z = dz
+            x = x,
+            y = y,
+            z = z
         },
-        cruise = cruise,
+        cruise = y,
         current = {
-            x = sx,
-            y = sy,
-            z = sz
+            x = x,
+            y = y,
+            z = z
         },
-        stage = "out_climb",
+        stage = "idle",
+        routeMode = "idle",
+        paused = false,
         sequence = 0,
-        tx = nil
+        tx = nil,
+        lastCommandToken = nil,
+        lastCommandReply = nil
     }
 
     saveMainState(state)
@@ -776,14 +778,248 @@ local function newTrip()
     return state
 end
 
-local function advanceTrip(state)
-    while true do
-        if state.tx then
-            runTransaction(state)
-            return
+local function integerValue(value)
+    local number = tonumber(value)
+
+    if not number or number ~= math.floor(number) then
+        return nil
+    end
+
+    return number
+end
+
+local function routeActive(state)
+    return
+        state.stage ~= "idle" and
+        state.stage ~= "arrived" and
+        state.stage ~= "complete"
+end
+
+local function copyPosition(position)
+    return {
+        x = position.x,
+        y = position.y,
+        z = position.z
+    }
+end
+
+local function statusPayload(state)
+    return {
+        type = "status",
+        ok = true,
+        release = CAIRN_RELEASE,
+        current = copyPosition(state.current),
+        destination = state.destination and copyPosition(state.destination) or nil,
+        origin = state.start and copyPosition(state.start) or nil,
+        cruise = state.cruise,
+        stage = state.stage,
+        routeMode = state.routeMode,
+        paused = state.paused == true,
+        active = routeActive(state),
+        transaction = state.tx and {
+            direction = state.tx.direction,
+            phase = state.tx.phase
+        } or nil
+    }
+end
+
+local function sendControlReply(token, payload)
+    payload = payload or {}
+    payload.token = token
+    payload.release = CAIRN_RELEASE
+
+    rednet.send(
+        CONTROL_ID,
+        payload,
+        CONTROL_REPLY_PROTOCOL
+    )
+end
+
+local function cacheControlReply(state, token, payload)
+    state.lastCommandToken = token
+    state.lastCommandReply = payload
+    saveMainState(state)
+end
+
+local function beginOneWay(state, x, y, z, cruise)
+    state.start = copyPosition(state.current)
+    state.destination = {
+        x = x,
+        y = y,
+        z = z
+    }
+    state.cruise = cruise
+    state.stage = "out_climb"
+    state.routeMode = "oneway"
+    state.paused = false
+    state.tx = nil
+    saveMainState(state)
+end
+
+local function handleControl(state, message)
+    if type(message) ~= "table" then
+        return nil
+    end
+
+    local token = tostring(message.token or "")
+    local command = tostring(message.command or "")
+
+    if token == "" then
+        return nil
+    end
+
+    if state.lastCommandToken == token and state.lastCommandReply then
+        sendControlReply(token, state.lastCommandReply)
+        return nil
+    end
+
+    local reply = {
+        type = "command_reply",
+        ok = false,
+        command = command
+    }
+
+    local action = nil
+
+    if command == "status" then
+        sendControlReply(token, statusPayload(state))
+        return nil
+
+    elseif command == "pause" then
+        if routeActive(state) then
+            state.paused = true
+            reply.ok = true
+            reply.message = "Route paused"
+        else
+            reply.ok = true
+            reply.message = "Platform is already idle"
         end
 
-        if state.stage == "out_climb" then
+    elseif command == "resume" then
+        if routeActive(state) then
+            state.paused = false
+            reply.ok = true
+            reply.message = "Route resumed"
+        else
+            reply.ok = false
+            reply.message = "No active route to resume"
+        end
+
+    elseif command == "cancel" then
+        state.paused = false
+        state.stage = "idle"
+        state.routeMode = "idle"
+        state.tx = nil
+        reply.ok = true
+        reply.message = "Route cancelled at current position"
+
+    elseif command == "set_destination" then
+        local x = integerValue(message.x)
+        local y = integerValue(message.y)
+        local z = integerValue(message.z)
+        local cruise = integerValue(message.cruise)
+
+        if not x or not y or not z or not cruise then
+            reply.message = "Destination and cruise must be whole numbers"
+        elseif cruise < state.current.y or cruise < y then
+            reply.message = "Cruise Y must be at or above current and destination Y"
+        else
+            beginOneWay(state, x, y, z, cruise)
+            reply.ok = true
+            reply.message = "One-way route accepted"
+        end
+
+    elseif command == "return_origin" then
+        if not state.start then
+            reply.message = "No route origin is stored"
+        else
+            local target = copyPosition(state.start)
+            local cruise = integerValue(message.cruise) or state.cruise or state.current.y
+
+            if cruise < state.current.y or cruise < target.y then
+                reply.message = "Cruise Y is below the required altitude"
+            else
+                beginOneWay(
+                    state,
+                    target.x,
+                    target.y,
+                    target.z,
+                    cruise
+                )
+                reply.ok = true
+                reply.message = "Return route accepted"
+            end
+        end
+
+    elseif command == "set_position" then
+        local x = integerValue(message.x)
+        local y = integerValue(message.y)
+        local z = integerValue(message.z)
+
+        if routeActive(state) or state.tx then
+            reply.message = "Pause or cancel the active route before changing position"
+        elseif not x or not y or not z then
+            reply.message = "Position must use whole numbers"
+        else
+            state.current = {
+                x = x,
+                y = y,
+                z = z
+            }
+            state.start = copyPosition(state.current)
+            state.destination = copyPosition(state.current)
+            state.cruise = y
+            state.stage = "idle"
+            state.routeMode = "idle"
+            state.paused = false
+            reply.ok = true
+            reply.message = "Authoritative position updated"
+        end
+
+    elseif command == "force_update" then
+        state.paused = routeActive(state)
+        reply.ok = true
+        reply.message = "Platform update starting"
+        action = "update"
+
+    else
+        reply.message = "Unknown command"
+    end
+
+    cacheControlReply(state, token, reply)
+    sendControlReply(token, reply)
+
+    return action
+end
+
+local function pollControl(state, timeout)
+    local sender, message = rednet.receive(
+        CONTROL_PROTOCOL,
+        timeout
+    )
+
+    if sender ~= CONTROL_ID then
+        return nil
+    end
+
+    return handleControl(state, message)
+end
+
+local function advanceTrip(state)
+    if state.tx then
+        runTransaction(state)
+        return
+    end
+
+    if state.paused then
+        return
+    end
+
+    while true do
+        if state.stage == "idle" or state.stage == "arrived" then
+            return
+
+        elseif state.stage == "out_climb" then
             if moveYTo(state, state.cruise) then
                 return
             end
@@ -812,6 +1048,13 @@ local function advanceTrip(state)
                 return
             end
 
+            if state.routeMode == "oneway" then
+                state.stage = "arrived"
+                state.paused = false
+                saveMainState(state)
+                return
+            end
+
             state.stage = "dwell"
             saveMainState(state)
 
@@ -820,7 +1063,23 @@ local function advanceTrip(state)
             print("")
             print("Destination reached.")
             print("Waiting 10 seconds before return...")
-            sleep(10)
+
+            local remaining = 10
+
+            while remaining > 0 do
+                local action = pollControl(state, 0.25)
+
+                if action == "update" then
+                    shell.run("update")
+                    return
+                end
+
+                if state.paused then
+                    return
+                end
+
+                remaining = remaining - 0.25
+            end
 
             state.stage = "return_climb"
             saveMainState(state)
@@ -854,23 +1113,17 @@ local function advanceTrip(state)
                 return
             end
 
-            state.stage = "complete"
+            state.stage = "arrived"
+            state.routeMode = "idle"
+            state.paused = false
             saveMainState(state)
+            return
 
         elseif state.stage == "complete" then
-            drawRoute(state)
-            print("")
-            print("Round trip complete.")
-            print("Returned to initial coordinates.")
-            print("")
-            print("Press Enter to plan another trip.")
-            read()
-
-            if fs.exists(MAIN_STATE_FILE) then
-                fs.delete(MAIN_STATE_FILE)
-            end
-
-            os.reboot()
+            state.stage = "arrived"
+            state.routeMode = "idle"
+            state.paused = false
+            saveMainState(state)
             return
 
         else
@@ -1017,7 +1270,7 @@ local function receiveRemoteUpdate(firstMessage)
                     fs.delete(stage)
                 end
 
-                local h = fs.open(".cairn_version", "w")
+                local h = fs.open("cairn_version", "w")
 
                 if h then
                     h.write(tostring(version))
@@ -1274,12 +1527,37 @@ local function runMain()
     local state = loadMainState()
 
     if not state then
-        state = newTrip()
+        state = initializeState()
     end
 
     while true do
-        advanceTrip(state)
-        sleep(0.05)
+        local waitTime = 0.05
+
+        if state.paused or not routeActive(state) then
+            drawRoute(state)
+
+            if state.paused then
+                print("")
+                print("Route paused by controller 2705")
+            else
+                print("")
+                print("Waiting for controller 2705")
+            end
+
+            waitTime = 0.5
+        end
+
+        local action = pollControl(state, waitTime)
+
+        if action == "update" then
+            shell.run("update")
+        end
+
+        if not state.paused then
+            advanceTrip(state)
+        end
+
+        sleep(0.02)
     end
 end
 

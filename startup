@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 25
+local CAIRN_RELEASE = 26
 
 local id = os.getComputerID()
 
@@ -18,4 +18,9 @@ if redstone and redstone.setOutput then
 end
 
 sleep(0.1)
-shell.run("cairn")
+
+if id == 2705 then
+    shell.run("nav_control")
+else
+    shell.run("cairn")
+end

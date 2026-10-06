@@ -1,0 +1,359 @@
+local CAIRN_RELEASE = 26
+
+local CONTROL_ID = 2705
+local MASTER_ID = 2700
+
+local CONTROL_PROTOCOL = "cairn.nav.command"
+local CONTROL_REPLY_PROTOCOL = "cairn.nav.reply"
+
+local REQUEST_TIMEOUT = 1.0
+local REQUEST_ATTEMPTS = 6
+
+local SIDES = {
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "front",
+    "back"
+}
+
+local requestSequence = 0
+
+local function findWirelessModem()
+    for _, side in ipairs(SIDES) do
+        if peripheral.getType(side) == "modem" then
+            local ok, wireless = pcall(
+                peripheral.call,
+                side,
+                "isWireless"
+            )
+
+            if ok and wireless == true then
+                return side
+            end
+        end
+    end
+
+    return nil
+end
+
+local function openWireless()
+    local side = findWirelessModem()
+
+    if not side then
+        return nil
+    end
+
+    if not rednet.isOpen(side) then
+        rednet.open(side)
+    end
+
+    return side
+end
+
+local function nextToken()
+    requestSequence = requestSequence + 1
+
+    return
+        tostring(CONTROL_ID) ..
+        ":" ..
+        tostring(requestSequence) ..
+        ":" ..
+        tostring(math.floor(os.clock() * 1000))
+end
+
+local function request(command)
+    local token = nextToken()
+
+    command.token = token
+
+    for attempt = 1, REQUEST_ATTEMPTS do
+        rednet.send(
+            MASTER_ID,
+            command,
+            CONTROL_PROTOCOL
+        )
+
+        local deadline = os.clock() + REQUEST_TIMEOUT
+
+        while os.clock() < deadline do
+            local sender, message = rednet.receive(
+                CONTROL_REPLY_PROTOCOL,
+                deadline - os.clock()
+            )
+
+            if not sender then
+                break
+            end
+
+            if
+                sender == MASTER_ID and
+                type(message) == "table" and
+                message.token == token
+            then
+                return message
+            end
+        end
+    end
+
+    return nil
+end
+
+local function askInteger(label)
+    while true do
+        write(label .. ": ")
+        local raw = read()
+        local value = tonumber(raw)
+
+        if value and value == math.floor(value) then
+            return value
+        end
+
+        print("Please enter a whole number.")
+    end
+end
+
+local function positionText(position)
+    if type(position) ~= "table" then
+        return "unknown"
+    end
+
+    return
+        "X " ..
+        tostring(position.x) ..
+        "  Y " ..
+        tostring(position.y) ..
+        "  Z " ..
+        tostring(position.z)
+end
+
+local function getStatus()
+    return request({
+        command = "status"
+    })
+end
+
+local function draw(status, wirelessSide)
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("CAIRN NAV CONTROL")
+    print("Console 2705")
+    print("Control v" .. CAIRN_RELEASE)
+    print("Wireless modem: " .. wirelessSide)
+    print("")
+
+    if not status then
+        print("Drive2 / 2700: OFFLINE")
+        print("")
+        print("R - Retry")
+        print("Q - Exit")
+        return
+    end
+
+    print(
+        "Drive2 / 2700: ONLINE  v" ..
+        tostring(status.release or "?")
+    )
+    print("Current: " .. positionText(status.current))
+
+    if status.destination then
+        print("Dest:    " .. positionText(status.destination))
+    end
+
+    print("Cruise Y: " .. tostring(status.cruise or "?"))
+    print("Mode: " .. tostring(status.routeMode or "idle"))
+    print("Stage: " .. tostring(status.stage or "idle"))
+    print("Paused: " .. (status.paused and "YES" or "NO"))
+
+    if status.transaction then
+        print(
+            "Move: " ..
+            tostring(status.transaction.direction) ..
+            " / " ..
+            tostring(status.transaction.phase)
+        )
+    end
+
+    print("")
+    print("1 - Set one-way destination")
+    print("2 - Pause route")
+    print("3 - Resume route")
+    print("4 - Cancel route")
+    print("5 - Return to route origin")
+    print("6 - Set current position")
+    print("U - Force platform update")
+    print("R - Refresh")
+    print("Q - Exit")
+end
+
+local function showReply(reply)
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CAIRN NAV CONTROL")
+    print("")
+
+    if not reply then
+        print("No response from Drive2.")
+    elseif reply.ok then
+        print(reply.message or "Command accepted.")
+    else
+        print(reply.message or "Command rejected.")
+    end
+
+    print("")
+    print("Press Enter.")
+    read()
+end
+
+local function setDestination(status)
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("ONE-WAY DESTINATION")
+    print("")
+    print("Current: " .. positionText(status and status.current))
+    print("")
+
+    local x = askInteger("Destination X")
+    local y = askInteger("Destination Y")
+    local z = askInteger("Destination Z")
+    local cruise = askInteger("Cruise altitude Y")
+
+    return request({
+        command = "set_destination",
+        x = x,
+        y = y,
+        z = z,
+        cruise = cruise
+    })
+end
+
+local function setPosition()
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("SET AUTHORITATIVE POSITION")
+    print("")
+    print("Only use this when the platform is physically")
+    print("at the coordinates you enter.")
+    print("")
+
+    local x = askInteger("X")
+    local y = askInteger("Y")
+    local z = askInteger("Z")
+
+    return request({
+        command = "set_position",
+        x = x,
+        y = y,
+        z = z
+    })
+end
+
+local function returnOrigin(status)
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("RETURN TO ROUTE ORIGIN")
+    print("")
+
+    if status and status.origin then
+        print("Origin: " .. positionText(status.origin))
+    else
+        print("Origin: unknown")
+    end
+
+    print("")
+    local cruise = askInteger("Cruise altitude Y")
+
+    return request({
+        command = "return_origin",
+        cruise = cruise
+    })
+end
+
+if os.getComputerID() ~= CONTROL_ID then
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CAIRN NAV CONTROL")
+    print("")
+    print("This program is reserved for computer 2705.")
+    print("Current ID: " .. os.getComputerID())
+    return
+end
+
+local wirelessSide = openWireless()
+
+if not wirelessSide then
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CAIRN NAV CONTROL")
+    print("")
+    print("No wireless modem found.")
+    return
+end
+
+while true do
+    local status = getStatus()
+
+    draw(status, wirelessSide)
+
+    local event, value = os.pullEvent()
+
+    if event == "char" then
+        local key = string.lower(value)
+
+        if key == "q" then
+            term.clear()
+            term.setCursorPos(1, 1)
+            print("CAIRN control offline")
+            return
+
+        elseif key == "r" then
+
+        elseif status and key == "1" then
+            showReply(setDestination(status))
+
+        elseif status and key == "2" then
+            showReply(request({
+                command = "pause"
+            }))
+
+        elseif status and key == "3" then
+            showReply(request({
+                command = "resume"
+            }))
+
+        elseif status and key == "4" then
+            showReply(request({
+                command = "cancel"
+            }))
+
+        elseif status and key == "5" then
+            showReply(returnOrigin(status))
+
+        elseif status and key == "6" then
+            showReply(setPosition())
+
+        elseif status and key == "u" then
+            term.clear()
+            term.setCursorPos(1, 1)
+            print("FORCE PLATFORM UPDATE")
+            print("")
+            print("Drive2 will pause the route, update Drive1,")
+            print("then update and reboot itself.")
+            print("")
+            print("Type YES to continue.")
+
+            local answer = string.upper(read() or "")
+
+            if answer == "YES" then
+                showReply(request({
+                    command = "force_update"
+                }))
+            end
+        end
+    end
+end
