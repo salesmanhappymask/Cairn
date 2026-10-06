@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 33
+local RELEASE_VERSION = 34
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
 

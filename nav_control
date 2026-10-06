@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 33
+local CAIRN_RELEASE = 34
 
 local CONTROL_ID = 2705
 local SLAVE_ID = 2701
@@ -487,7 +487,17 @@ local function quarry()
     local x = askInteger("X")
     local y = askInteger("Y")
     local z = askInteger("Z")
-    local cruise = askInteger("Cruise Y")
+    local currentY =
+        lastStatus and
+        lastStatus.current and
+        tonumber(lastStatus.current.y) or
+        y
+    local minimumCruise = math.max(currentY, y)
+    local cruise = askInteger("Cruise Y >= " .. tostring(minimumCruise))
+
+    if cruise < minimumCruise then
+        cruise = minimumCruise
+    end
 
     return requestCommand(
         {
@@ -538,8 +548,25 @@ local function setChunkGrid()
         return nil
     end
 
-    setActivity("Chunk grid saved", tostring(x) .. "," .. tostring(z))
-    return true
+    local reply = requestCommand(
+        {
+            command = "set_chunk_grid",
+            gridX = x,
+            gridZ = z
+        },
+        "CHUNK GRID"
+    )
+
+    if reply and reply.ok then
+        setActivity("Chunk grid saved", tostring(x) .. "," .. tostring(z))
+        return true
+    end
+
+    setActivity(
+        "Chunk grid saved locally",
+        reply and reply.message or "Cairn did not acknowledge grid"
+    )
+    return reply
 end
 
 local function setPosition()

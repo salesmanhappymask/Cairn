@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 33
+local CAIRN_RELEASE = 34
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -1057,6 +1057,10 @@ local function controlStatus(state)
             phase = state.tx.phase
         } or nil,
         movementError = state.lastMoveError,
+        gridSouthWest = state.gridSouthWest and {
+            x = state.gridSouthWest.x,
+            z = state.gridSouthWest.z
+        } or nil,
         quarry = state.quarry and {
             phase = state.quarry.phase,
             rmId = state.quarry.rmId,
@@ -1259,6 +1263,28 @@ local function handleControl(state, message)
             reply.message = "Destination accepted"
         end
 
+    elseif command == "set_chunk_grid" then
+        local gridX = integerValue(message.gridX)
+        local gridZ = integerValue(message.gridZ)
+
+        if not gridX or not gridZ then
+            reply.message = "Chunk grid coordinates must be whole numbers"
+        else
+            local offsetX = state.current.x - gridX
+            local offsetZ = gridZ - state.current.z
+
+            if offsetX < 0 or offsetX >= 16 or offsetZ < 0 or offsetZ >= 16 then
+                reply.message = "Chunk grid does not contain Drive2's current position"
+            else
+                state.gridSouthWest = {
+                    x = gridX,
+                    z = gridZ
+                }
+                reply.ok = true
+                reply.message = "Chunk grid saved on Cairn"
+            end
+        end
+
     elseif command == "quarry" then
         local x = integerValue(message.x)
         local y = integerValue(message.y)
@@ -1266,24 +1292,40 @@ local function handleControl(state, message)
         local cruise = integerValue(message.cruise)
         local gridX = integerValue(message.gridX)
         local gridZ = integerValue(message.gridZ)
-        local gridSouthWest = gridX and gridZ and {
-            x = gridX,
-            z = gridZ
-        } or nil
+        local gridSouthWest = nil
+
+        if gridX and gridZ then
+            gridSouthWest = {
+                x = gridX,
+                z = gridZ
+            }
+            state.gridSouthWest = {
+                x = gridX,
+                z = gridZ
+            }
+        elseif gridPoint(state.gridSouthWest) then
+            gridSouthWest = {
+                x = state.gridSouthWest.x,
+                z = state.gridSouthWest.z
+            }
+        end
 
         if routeActive(state) or state.tx then
             reply.message = "Finish or cancel the active route first"
 
-        elseif not x or not y or not z or not cruise then
+        elseif not x or not y or not z then
             reply.message = "Coordinates must be whole numbers"
 
         elseif not gridSouthWest then
-            reply.message = "Set the controller CHUNK GRID first"
-
-        elseif cruise < state.current.y or cruise < y then
-            reply.message = "Cruise Y is too low"
+            reply.message = "Set CHUNK GRID on nav_control first"
 
         else
+            local minimumCruise = math.max(state.current.y, y)
+
+            if not cruise or cruise < minimumCruise then
+                cruise = minimumCruise
+            end
+
             beginQuarry(
                 state,
                 x,
@@ -1296,8 +1338,9 @@ local function handleControl(state, message)
             local sw = state.quarry.targetChunkSouthWest
             reply.ok = true
             reply.message =
-                "Quarry route accepted; target chunk SW " ..
-                tostring(sw.x) .. "," .. tostring(sw.z)
+                "Quarry route started; target chunk SW " ..
+                tostring(sw.x) .. "," .. tostring(sw.z) ..
+                " cruise Y " .. tostring(cruise)
         end
 
     elseif command == "return_origin" then
@@ -1375,6 +1418,28 @@ local function handleControl(state, message)
 
     else
         reply.message = "Unknown command"
+    end
+
+    if reply.ok then
+        logEvent(
+            "INFO",
+            "CONTROL_ACCEPT",
+            "command=" .. tostring(command) ..
+            " token=" .. tostring(token) ..
+            " message=" .. tostring(reply.message or "") ..
+            " stage=" .. tostring(state.stage) ..
+            " mode=" .. tostring(state.routeMode)
+        )
+    else
+        logEvent(
+            "WARN",
+            "CONTROL_REJECT",
+            "command=" .. tostring(command) ..
+            " token=" .. tostring(token) ..
+            " reason=" .. tostring(reply.message or "unknown") ..
+            " stage=" .. tostring(state.stage) ..
+            " mode=" .. tostring(state.routeMode)
+        )
     end
 
     cacheControlReply(state, token, reply)
@@ -1666,6 +1731,7 @@ local function initializeState()
         lastControlReply = nil,
         quarrySequence = 0,
         quarry = nil,
+        gridSouthWest = nil,
         lastMoveError = nil
     }
 
