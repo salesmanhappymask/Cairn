@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 35
+local CAIRN_RELEASE = 36
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -490,13 +490,24 @@ local function waitLinkType(expected, token, timeout)
 
     while os.clock() < deadline do
         local remaining = deadline - os.clock()
-        local sender, message = rednet.receive(LINK_PROTOCOL, remaining)
+        local sender, message, protocol = rednet.receive(nil, remaining)
 
         if not sender then
             return nil
         end
 
-        if sender == SLAVE_ID and type(message) == "table" then
+        if protocol == QUARRY_PROTOCOL and type(message) == "table" then
+            queueQuarry(sender, message)
+            logEvent(
+                "INFO",
+                "QUARRY_RX",
+                "from=" .. tostring(sender) ..
+                " type=" .. tostring(message.type or "table") ..
+                " job=" .. tostring(message.jobToken or "") ..
+                " path=direct"
+            )
+
+        elseif sender == SLAVE_ID and protocol == LINK_PROTOCOL and type(message) == "table" then
             if
                 message.type == "control_relay" and
                 type(message.message) == "table"
@@ -508,6 +519,14 @@ local function waitLinkType(expected, token, timeout)
                 type(message.message) == "table"
             then
                 queueQuarry(message.sender, message.message)
+                logEvent(
+                    "INFO",
+                    "QUARRY_RX",
+                    "from=" .. tostring(message.sender) ..
+                    " type=" .. tostring(message.message.type or "table") ..
+                    " job=" .. tostring(message.message.jobToken or "") ..
+                    " path=drive1"
+                )
 
             elseif message.type == expected then
                 if token == nil or message.token == token then
@@ -1459,15 +1478,38 @@ local function processControlQueue(state)
 end
 
 local function sendQuarryWireless(message, target)
-    rednet.send(
-        SLAVE_ID,
-        {
-            type = "quarry_wireless",
-            target = target,
-            message = message
-        },
-        LINK_PROTOCOL
+    if type(message) ~= "table" then
+        return false
+    end
+
+    local directOk = false
+
+    if openModem(MASTER_WIRELESS_SIDE) then
+        if target then
+            directOk = rednet.send(
+                target,
+                message,
+                QUARRY_PROTOCOL
+            ) ~= false
+        else
+            rednet.broadcast(
+                message,
+                QUARRY_PROTOCOL
+            )
+            directOk = true
+        end
+    end
+
+    logEvent(
+        "INFO",
+        "QUARRY_TX",
+        "type=" .. tostring(message.type or "table") ..
+        " job=" .. tostring(message.jobToken or "") ..
+        " target=" .. tostring(target or "broadcast") ..
+        " direct=" .. tostring(directOk)
     )
+
+    return directOk
 end
 
 local function processQuarryQueue(state)
@@ -1554,13 +1596,28 @@ local function processQuarryQueue(state)
 end
 
 local function receiveControlRelay(timeout)
-    local sender, message = rednet.receive(
-        LINK_PROTOCOL,
-        timeout
-    )
+    local sender, message, protocol = rednet.receive(nil, timeout)
+
+    if not sender then
+        return false
+    end
+
+    if protocol == QUARRY_PROTOCOL and type(message) == "table" then
+        queueQuarry(sender, message)
+        logEvent(
+            "INFO",
+            "QUARRY_RX",
+            "from=" .. tostring(sender) ..
+            " type=" .. tostring(message.type or "table") ..
+            " job=" .. tostring(message.jobToken or "") ..
+            " path=direct"
+        )
+        return true
+    end
 
     if
         sender == SLAVE_ID and
+        protocol == LINK_PROTOCOL and
         type(message) == "table"
     then
         if
@@ -1575,6 +1632,14 @@ local function receiveControlRelay(timeout)
             type(message.message) == "table"
         then
             queueQuarry(message.sender, message.message)
+            logEvent(
+                "INFO",
+                "QUARRY_RX",
+                "from=" .. tostring(message.sender) ..
+                " type=" .. tostring(message.message.type or "table") ..
+                " job=" .. tostring(message.message.jobToken or "") ..
+                " path=drive1"
+            )
             return true
         end
     end
@@ -2592,6 +2657,7 @@ local function runMain()
     end
 
     openModem(MASTER_WIRED_SIDE)
+    openModem(MASTER_WIRELESS_SIDE)
 
     local state = loadMainState()
 
