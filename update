@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 29
+local RELEASE_VERSION = 30
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
 
@@ -11,7 +11,7 @@ local TEMP = "cairn_update_new"
 local STAGE = "cairn_update_stage"
 local VERSION_FILE = "cairn_version"
 local STATE_FILE = "cairn_drive_state"
-local FILES = {"startup", "cairn", "update"}
+local FILES = {"startup", "cairn", "update", "push", "pushlogs"}
 local CHUNK_SIZE = 3000
 
 local LEGACY_VERSION_FILE = ".cairn_version"
@@ -516,7 +516,9 @@ local function applyMain()
     local preserve = {
         [TEMP] = true,
         [STAGE] = true,
-        [STATE_FILE] = true
+        [STATE_FILE] = true,
+        ["logs"] = true,
+        ["diagnostics.txt"] = true
     }
 
     for _, name in ipairs(fs.list("")) do

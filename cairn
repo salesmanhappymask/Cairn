@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 29
+local CAIRN_RELEASE = 30
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -34,6 +34,71 @@ local CONTROL_BOOT_WINDOW = 1.25
 local controlQueue = {}
 local quarryQueue = {}
 local pendingAction = nil
+
+local LOG_DIR = "logs"
+local LOG_CURRENT = "logs/current.log"
+local LOG_ERRORS = "logs/errors.log"
+
+local function ensureLogDir()
+    if not fs.exists(LOG_DIR) then
+        fs.makeDir(LOG_DIR)
+    end
+end
+
+local function rotateLog(path, previous, limit)
+    if fs.exists(path) and fs.getSize(path) >= limit then
+        if fs.exists(previous) then
+            fs.delete(previous)
+        end
+        fs.move(path, previous)
+    end
+end
+
+local function appendLog(path, line)
+    ensureLogDir()
+    local h = fs.open(path, "a")
+    if h then
+        h.writeLine(line)
+        h.close()
+    end
+end
+
+local function logRole()
+    local id = os.getComputerID()
+    if id == MASTER_ID then
+        return "drive2"
+    elseif id == SLAVE_ID then
+        return "drive1"
+    end
+    return "unknown"
+end
+
+local function logEvent(level, event, detail)
+    rotateLog(LOG_CURRENT, "logs/previous.log", 65536)
+    rotateLog(LOG_ERRORS, "logs/errors.previous.log", 32768)
+    local line =
+        "[" .. tostring(os.clock()) .. "] " ..
+        "[v" .. tostring(CAIRN_RELEASE) .. "] " ..
+        "[id=" .. tostring(os.getComputerID()) .. "] " ..
+        "[role=" .. logRole() .. "] " ..
+        "[" .. tostring(level) .. "] " ..
+        "[" .. tostring(event) .. "] " ..
+        tostring(detail or "")
+    appendLog(LOG_CURRENT, line)
+    if level == "ERROR" then
+        appendLog(LOG_ERRORS, line)
+    end
+end
+
+local function positionText(value)
+    if type(value) ~= "table" then
+        return "nil"
+    end
+    return
+        tostring(value.x) .. "," ..
+        tostring(value.y) .. "," ..
+        tostring(value.z)
+end
 
 local moves = {
     forward = {
@@ -536,16 +601,29 @@ local function commitMove(state)
         return false
     end
 
+    local before = positionText(state.current)
+
     state.current.x = state.current.x + move.dx
     state.current.y = state.current.y + move.dy
     state.current.z = state.current.z + move.dz
 
     local token = tx.token
+    local direction = tx.direction
 
     state.tx = nil
 
     saveMainState(state)
     commitSlave(token)
+
+    logEvent(
+        "INFO",
+        "MOVE_COMMIT",
+        "token=" .. tostring(token) ..
+        " direction=" .. tostring(direction) ..
+        " from=" .. before ..
+        " to=" .. positionText(state.current) ..
+        " stage=" .. tostring(state.stage)
+    )
 
     drawRoute(state)
 
@@ -558,6 +636,16 @@ local function recoveryFailure(state, message)
     if not tx then
         return
     end
+
+    logEvent(
+        "ERROR",
+        "MOVE_RECOVERY",
+        "token=" .. tostring(tx.token) ..
+        " direction=" .. tostring(tx.direction) ..
+        " phase=" .. tostring(tx.phase) ..
+        " current=" .. positionText(state.current) ..
+        " message=" .. tostring(message)
+    )
 
     tx.recoveryReboots = (tx.recoveryReboots or 0) + 1
     saveMainState(state)
@@ -623,6 +711,12 @@ local function confirmLocalMove(state)
 end
 
 local function sendSlaveExecute(tx)
+    logEvent(
+        "INFO",
+        "REMOTE_EXECUTE_SEND",
+        "token=" .. tostring(tx.token) ..
+        " direction=" .. tostring(tx.direction)
+    )
     rednet.send(SLAVE_ID, {
         type = "execute",
         token = tx.token,
@@ -697,6 +791,15 @@ local function runTransaction(state)
             tx.phase = "local_issued"
             saveMainState(state)
 
+            logEvent(
+                "INFO",
+                "LOCAL_PULSE",
+                "token=" .. tostring(tx.token) ..
+                " direction=" .. tostring(tx.direction) ..
+                " side=" .. tostring(move.side) ..
+                " current=" .. positionText(state.current)
+            )
+
             pulseMain(move.side)
 
             tx.phase = "await_peer"
@@ -745,6 +848,18 @@ local function newMove(state, direction)
         phase = "created",
         recoveryReboots = 0
     }
+
+    logEvent(
+        "INFO",
+        "MOVE_CREATE",
+        "token=" .. tostring(state.tx.token) ..
+        " direction=" .. tostring(direction) ..
+        " owner=" .. tostring(move.owner) ..
+        " side=" .. tostring(move.side) ..
+        " current=" .. positionText(state.current) ..
+        " destination=" .. positionText(state.destination) ..
+        " stage=" .. tostring(state.stage)
+    )
 
     saveMainState(state)
     runTransaction(state)
@@ -906,6 +1021,13 @@ local function beginOneWay(state, x, y, z, cruise)
     state.tx = nil
     state.quarry = nil
     saveMainState(state)
+    logEvent(
+        "INFO",
+        "ROUTE_BEGIN",
+        "mode=oneway start=" .. positionText(state.start) ..
+        " destination=" .. positionText(state.destination) ..
+        " cruise=" .. tostring(state.cruise)
+    )
 end
 
 local function beginQuarry(state, x, y, z, cruise)
@@ -930,6 +1052,14 @@ local function beginQuarry(state, x, y, z, cruise)
             tostring(state.quarrySequence)
     }
     saveMainState(state)
+    logEvent(
+        "INFO",
+        "ROUTE_BEGIN",
+        "mode=quarry start=" .. positionText(state.start) ..
+        " destination=" .. positionText(state.destination) ..
+        " cruise=" .. tostring(state.cruise) ..
+        " job=" .. tostring(state.quarry.jobToken)
+    )
 end
 
 local function handleControl(state, message)
@@ -963,6 +1093,15 @@ local function handleControl(state, message)
         command = command,
         ok = false
     }
+
+    logEvent(
+        "INFO",
+        "CONTROL",
+        "command=" .. tostring(command) ..
+        " token=" .. tostring(token) ..
+        " current=" .. positionText(state.current) ..
+        " stage=" .. tostring(state.stage)
+    )
 
     if command == "pause" then
         state.paused = true
@@ -1991,6 +2130,13 @@ local function runSlave()
     end
 
     saveSlaveState(state)
+    logEvent(
+        "INFO",
+        "BOOT",
+        "boot=" .. tostring(state.boot) ..
+        " tx=" .. tostring(state.tx and state.tx.token or "none") ..
+        " phase=" .. tostring(state.tx and state.tx.phase or "none")
+    )
 
     term.clear()
     term.setCursorPos(1, 1)
@@ -2092,6 +2238,14 @@ local function runSlave()
                         state.tx.phase = "executing"
                         saveSlaveState(state)
 
+                        logEvent(
+                            "INFO",
+                            "SLAVE_PULSE_BEGIN",
+                            "token=" .. tostring(message.token) ..
+                            " direction=" .. tostring(message.direction) ..
+                            " side=" .. tostring(move.side)
+                        )
+
                         slaveReply(
                             state,
                             "execute_ack",
@@ -2110,6 +2264,13 @@ local function runSlave()
 
                         state.tx.phase = "complete"
                         saveSlaveState(state)
+
+                        logEvent(
+                            "INFO",
+                            "SLAVE_PULSE_COMPLETE",
+                            "token=" .. tostring(message.token) ..
+                            " direction=" .. tostring(message.direction)
+                        )
 
                         slaveReply(
                             state,
@@ -2146,6 +2307,24 @@ local function runSlave()
 
             elseif message.type == "quarry_wireless" then
                 sendQuarryFromSlave(message)
+
+            elseif message.type == "diag_request" then
+                slaveReply(
+                    state,
+                    "diag_reply",
+                    message.token,
+                    {
+                        state = state,
+                        outputs = {
+                            front = redstone.getOutput("front"),
+                            back = redstone.getOutput("back"),
+                            left = redstone.getOutput("left"),
+                            right = redstone.getOutput("right"),
+                            top = redstone.getOutput("top"),
+                            bottom = redstone.getOutput("bottom")
+                        }
+                    }
+                )
 
             elseif message.type == "control_scan" then
                 term.setCursorPos(1, 9)
@@ -2212,6 +2391,16 @@ local function runMain()
     if not state then
         state = initializeState()
     end
+
+    logEvent(
+        "INFO",
+        "BOOT",
+        "current=" .. positionText(state.current) ..
+        " destination=" .. positionText(state.destination) ..
+        " stage=" .. tostring(state.stage) ..
+        " mode=" .. tostring(state.routeMode) ..
+        " tx=" .. tostring(state.tx and state.tx.token or "none")
+    )
 
     while true do
         receiveControlRelay(0.05)
