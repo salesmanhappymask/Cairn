@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 28
+local CAIRN_RELEASE = 29
 
 local CONTROL_ID = 2705
 local SLAVE_ID = 2701
@@ -194,21 +194,31 @@ local function drawButtons()
     )
 
     addButton(
-        "pause",
-        "PAUSE",
+        "quarry",
+        "QUARRY",
         rightX,
         7,
         width,
         8,
+        colors.lime
+    )
+
+    addButton(
+        "pause",
+        "PAUSE",
+        1,
+        9,
+        leftWidth,
+        10,
         colors.orange
     )
 
     addButton(
         "resume",
         "RESUME",
-        1,
+        rightX,
         9,
-        leftWidth,
+        width,
         10,
         colors.green
     )
@@ -216,19 +226,19 @@ local function drawButtons()
     addButton(
         "cancel",
         "CANCEL",
-        rightX,
-        9,
-        width,
-        10,
+        1,
+        11,
+        leftWidth,
+        12,
         colors.red
     )
 
     addButton(
         "return",
         "RETURN",
-        1,
+        rightX,
         11,
-        leftWidth,
+        width,
         12,
         colors.purple
     )
@@ -236,19 +246,19 @@ local function drawButtons()
     addButton(
         "position",
         "SET POSITION",
-        rightX,
-        11,
-        width,
-        12,
+        1,
+        13,
+        leftWidth,
+        14,
         colors.cyan
     )
 
     addButton(
         "update",
         "UPDATE",
-        1,
+        rightX,
         13,
-        leftWidth,
+        width,
         14,
         colors.brown
     )
@@ -256,17 +266,17 @@ local function drawButtons()
     addButton(
         "refresh",
         "REFRESH",
-        rightX,
-        13,
-        width,
-        14,
+        1,
+        15,
+        leftWidth,
+        16,
         colors.gray
     )
 
     addButton(
         "exit",
         "EXIT",
-        1,
+        rightX,
         15,
         width,
         16,
@@ -307,7 +317,15 @@ local function draw()
             (lastStatus.paused and "PAUSED" or "RUNNING")
         )
 
-        if lastStatus.transaction then
+        if lastStatus.quarry then
+            print(
+                "QRY " ..
+                tostring(lastStatus.quarry.phase or "?") ..
+                (lastStatus.quarry.error and
+                    (" " .. tostring(lastStatus.quarry.error)) or
+                    "")
+            )
+        elseif lastStatus.transaction then
             print(
                 "MOVE " ..
                 tostring(lastStatus.transaction.direction) ..
@@ -476,6 +494,39 @@ local function destination()
     )
 end
 
+local function quarry()
+    resetColors()
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("SET QUARRY DESTINATION")
+    print("")
+    print(
+        "Current: " ..
+        position(lastStatus and lastStatus.current)
+    )
+    print("")
+    print("Drive2 must start and arrive at the")
+    print("bottom-left block inside a chunk.")
+    print("")
+
+    local x = askInteger("X")
+    local y = askInteger("Y")
+    local z = askInteger("Z")
+    local cruise = askInteger("Cruise Y")
+
+    return requestCommand(
+        {
+            command = "quarry",
+            x = x,
+            y = y,
+            z = z,
+            cruise = cruise
+        },
+        "QUARRY"
+    )
+end
+
 local function setPosition()
     resetColors()
     term.clear()
@@ -568,6 +619,13 @@ local function handle(id)
             "Entering coordinates"
         )
         reply = destination()
+
+    elseif id == "quarry" then
+        setActivity(
+            "Quarry selected",
+            "Entering destination"
+        )
+        reply = quarry()
 
     elseif id == "pause" then
         setActivity(
@@ -709,6 +767,7 @@ while true do
 
         local shortcuts = {
             ["1"] = "destination",
+            ["7"] = "quarry",
             ["2"] = "pause",
             ["3"] = "resume",
             ["4"] = "cancel",

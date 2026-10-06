@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 28
+local CAIRN_RELEASE = 29
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -9,14 +9,15 @@ local COMMAND_PROTOCOL = "cairn.drive.command"
 local UPDATE_PROTOCOL = "cairn.drive.update"
 local CONTROL_PROTOCOL = "cairn.nav.command"
 local CONTROL_REPLY_PROTOCOL = "cairn.nav.reply"
+local QUARRY_PROTOCOL = "cairn.quarry.v1"
 
 local MAIN_STATE_FILE = "cairn_drive_state"
 local SLAVE_STATE_FILE = "cairn_drive1_state"
 local LEGACY_MAIN_STATE_FILE = ".cairn_drive.tmp"
 local LEGACY_SLAVE_STATE_FILE = ".cairn_drive1.tmp"
 
-local MAIN_STATE_VERSION = 6
-local SLAVE_STATE_VERSION = 4
+local MAIN_STATE_VERSION = 7
+local SLAVE_STATE_VERSION = 5
 
 local MASTER_WIRED_SIDE = "left"
 local MASTER_WIRELESS_SIDE = "top"
@@ -31,6 +32,7 @@ local CONTROL_WINDOW = 0.30
 local CONTROL_BOOT_WINDOW = 1.25
 
 local controlQueue = {}
+local quarryQueue = {}
 local pendingAction = nil
 
 local moves = {
@@ -256,13 +258,16 @@ local function loadMainState()
     if
         state.version == 3 or
         state.version == 4 or
-        state.version == 5
+        state.version == 5 or
+        state.version == 6
     then
         state.version = MAIN_STATE_VERSION
         state.paused = state.paused == true
         state.routeMode = state.routeMode or "roundtrip"
         state.lastControlToken = nil
         state.lastControlReply = nil
+        state.quarrySequence = tonumber(state.quarrySequence) or 0
+        state.quarry = state.quarry
 
         if state.stage == "complete" then
             state.stage = "idle"
@@ -280,6 +285,7 @@ local function loadMainState()
 
     state.paused = state.paused == true
     state.routeMode = state.routeMode or "idle"
+    state.quarrySequence = tonumber(state.quarrySequence) or 0
 
     return state
 end
@@ -295,7 +301,7 @@ local function loadSlaveState()
         }
     end
 
-    if state.version == 2 or state.version == 3 then
+    if state.version == 2 or state.version == 3 or state.version == 4 then
         state.version = SLAVE_STATE_VERSION
         writeTable(SLAVE_STATE_FILE, state)
         return state
@@ -370,6 +376,10 @@ local function drawRoute(state, action)
     print("Cruise Y: " .. state.cruise)
     print("Stage: " .. state.stage)
 
+    if state.quarry then
+        print("Quarry: " .. tostring(state.quarry.phase or "TRAVEL"))
+    end
+
     if action then
         local move = moves[action]
         print("")
@@ -391,6 +401,17 @@ local function queueControl(message)
     controlQueue[#controlQueue + 1] = message
 end
 
+local function queueQuarry(sender, message)
+    if type(message) ~= "table" then
+        return
+    end
+
+    quarryQueue[#quarryQueue + 1] = {
+        sender = sender,
+        message = message
+    }
+end
+
 local function waitLinkType(expected, token, timeout)
     local deadline = os.clock() + timeout
 
@@ -408,6 +429,12 @@ local function waitLinkType(expected, token, timeout)
                 type(message.message) == "table"
             then
                 queueControl(message.message)
+
+            elseif
+                message.type == "quarry_relay" and
+                type(message.message) == "table"
+            then
+                queueQuarry(message.sender, message.message)
 
             elseif message.type == expected then
                 if token == nil or message.token == token then
@@ -746,6 +773,71 @@ local function copyPosition(value)
     }
 end
 
+local function chunkOffset(value)
+    local base = math.floor(value / 16) * 16
+    return value - base
+end
+
+local function isBottomLeftChunkCorner(position)
+    return
+        type(position) == "table" and
+        type(position.x) == "number" and
+        type(position.z) == "number" and
+        chunkOffset(position.x) == 0 and
+        chunkOffset(position.z) == 15
+end
+
+local function quarryGeometry(position)
+    return {
+        cairn = copyPosition(position),
+        drive1 = {
+            x = position.x,
+            y = position.y,
+            z = position.z - 4
+        },
+        dock = {
+            x = position.x,
+            y = position.y + 1,
+            z = position.z - 4
+        },
+        clear = {
+            x = position.x - 5,
+            y = position.y - 3,
+            z = position.z - 4
+        },
+        seed = {
+            x = position.x - 1,
+            y = position.y - 3,
+            z = position.z + 1
+        },
+        worldOrigin = {
+            x = position.x - 1,
+            y = position.y - 3,
+            z = position.z
+        },
+        chunk = {
+            x = math.floor(position.x / 16),
+            z = math.floor(position.z / 16),
+            offsetX = chunkOffset(position.x),
+            offsetZ = chunkOffset(position.z)
+        }
+    }
+end
+
+local function quarryCommitted(state)
+    if not state.quarry then
+        return false
+    end
+
+    local phase = tostring(state.quarry.phase or "")
+
+    return
+        phase ~= "" and
+        phase ~= "TRAVEL" and
+        phase ~= "CONTACT" and
+        phase ~= "READY"
+end
+
 local function routeActive(state)
     return
         state.stage ~= "idle" and
@@ -768,6 +860,12 @@ local function controlStatus(state)
         transaction = state.tx and {
             direction = state.tx.direction,
             phase = state.tx.phase
+        } or nil,
+        quarry = state.quarry and {
+            phase = state.quarry.phase,
+            rmId = state.quarry.rmId,
+            jobToken = state.quarry.jobToken,
+            error = state.quarry.error
         } or nil
     }
 end
@@ -806,6 +904,31 @@ local function beginOneWay(state, x, y, z, cruise)
     state.routeMode = "oneway"
     state.paused = false
     state.tx = nil
+    state.quarry = nil
+    saveMainState(state)
+end
+
+local function beginQuarry(state, x, y, z, cruise)
+    state.quarrySequence = (tonumber(state.quarrySequence) or 0) + 1
+    state.start = copyPosition(state.current)
+    state.destination = {
+        x = x,
+        y = y,
+        z = z
+    }
+    state.cruise = cruise
+    state.stage = "out_climb"
+    state.routeMode = "quarry"
+    state.paused = false
+    state.tx = nil
+    state.quarry = {
+        phase = "TRAVEL",
+        jobToken =
+            "quarry:" ..
+            tostring(MASTER_ID) ..
+            ":" ..
+            tostring(state.quarrySequence)
+    }
     saveMainState(state)
 end
 
@@ -856,12 +979,17 @@ local function handleControl(state, message)
         end
 
     elseif command == "cancel" then
-        state.paused = false
-        state.stage = "idle"
-        state.routeMode = "idle"
-        state.tx = nil
-        reply.ok = true
-        reply.message = "Route cancelled"
+        if quarryCommitted(state) then
+            reply.message = "Quarry is deployed; cancel is locked until the RM returns"
+        else
+            state.paused = false
+            state.stage = "idle"
+            state.routeMode = "idle"
+            state.tx = nil
+            state.quarry = nil
+            reply.ok = true
+            reply.message = "Route cancelled"
+        end
 
     elseif command == "set_destination" then
         local x = integerValue(message.x)
@@ -888,8 +1016,50 @@ local function handleControl(state, message)
             reply.message = "Destination accepted"
         end
 
+    elseif command == "quarry" then
+        local x = integerValue(message.x)
+        local y = integerValue(message.y)
+        local z = integerValue(message.z)
+        local cruise = integerValue(message.cruise)
+        local target = x and y and z and {
+            x = x,
+            y = y,
+            z = z
+        } or nil
+
+        if routeActive(state) or state.tx then
+            reply.message = "Finish or cancel the active route first"
+
+        elseif not x or not y or not z or not cruise then
+            reply.message = "Coordinates must be whole numbers"
+
+        elseif cruise < state.current.y or cruise < y then
+            reply.message = "Cruise Y is too low"
+
+        elseif not isBottomLeftChunkCorner(state.current) then
+            reply.message = "Current Drive2 position is not the chunk bottom-left corner"
+
+        elseif not isBottomLeftChunkCorner(target) then
+            reply.message = "Quarry destination must place Drive2 at chunk bottom-left"
+
+        else
+            beginQuarry(
+                state,
+                x,
+                y,
+                z,
+                cruise
+            )
+
+            reply.ok = true
+            reply.message = "Quarry route accepted"
+        end
+
     elseif command == "return_origin" then
-        if not state.start then
+        if quarryCommitted(state) then
+            reply.message = "Quarry is deployed; Cairn will return after pack-up"
+
+        elseif not state.start then
             reply.message = "No origin stored"
 
         else
@@ -948,10 +1118,14 @@ local function handleControl(state, message)
         end
 
     elseif command == "force_update" then
-        state.paused = true
-        reply.ok = true
-        reply.message = "Platform update starting"
-        pendingAction = "update"
+        if quarryCommitted(state) then
+            reply.message = "Update locked while Regional Manager is deployed"
+        else
+            state.paused = true
+            reply.ok = true
+            reply.message = "Platform update starting"
+            pendingAction = "update"
+        end
 
     else
         reply.message = "Unknown command"
@@ -972,6 +1146,101 @@ local function processControlQueue(state)
     end
 end
 
+local function sendQuarryWireless(message, target)
+    rednet.send(
+        SLAVE_ID,
+        {
+            type = "quarry_wireless",
+            target = target,
+            message = message
+        },
+        LINK_PROTOCOL
+    )
+end
+
+local function processQuarryQueue(state)
+    local changed = false
+
+    while #quarryQueue > 0 do
+        local entry = table.remove(quarryQueue, 1)
+        local sender = entry.sender
+        local message = entry.message
+
+        if
+            state.quarry and
+            type(message) == "table" and
+            tostring(message.jobToken or "") ==
+                tostring(state.quarry.jobToken or "")
+        then
+            local kind = tostring(message.type or "")
+
+            if kind == "quarry_ready" then
+                state.quarry.rmId =
+                    tonumber(message.rmId) or
+                    tonumber(sender)
+
+                state.quarry.phase = "READY"
+                state.stage = "quarry_launch"
+                changed = true
+
+            elseif kind == "quarry_launch_ack" then
+                state.quarry.rmId =
+                    tonumber(message.rmId) or
+                    state.quarry.rmId or
+                    tonumber(sender)
+
+                state.quarry.phase = "UNDOCKING"
+                state.stage = "quarry_wait"
+                changed = true
+
+            elseif kind == "quarry_status" then
+                state.quarry.rmId =
+                    tonumber(message.rmId) or
+                    state.quarry.rmId or
+                    tonumber(sender)
+
+                if message.phase then
+                    state.quarry.phase =
+                        tostring(message.phase)
+                end
+
+                state.quarry.error = message.error
+                changed = true
+
+            elseif kind == "quarry_complete" then
+                state.quarry.rmId =
+                    tonumber(message.rmId) or
+                    state.quarry.rmId or
+                    tonumber(sender)
+
+                state.quarry.phase = "DOCKED"
+                state.quarry.error = nil
+                state.stage = "return_climb"
+                state.routeMode = "quarry_return"
+                state.paused = false
+                changed = true
+
+            elseif kind == "quarry_error" then
+                state.quarry.rmId =
+                    tonumber(message.rmId) or
+                    state.quarry.rmId or
+                    tonumber(sender)
+
+                state.quarry.phase = "ERROR"
+                state.quarry.error =
+                    tostring(message.error or "Regional Manager error")
+
+                state.paused = true
+                changed = true
+            end
+        end
+    end
+
+    if changed then
+        saveMainState(state)
+    end
+end
+
 local function receiveControlRelay(timeout)
     local sender, message = rednet.receive(
         LINK_PROTOCOL,
@@ -980,12 +1249,22 @@ local function receiveControlRelay(timeout)
 
     if
         sender == SLAVE_ID and
-        type(message) == "table" and
-        message.type == "control_relay" and
-        type(message.message) == "table"
+        type(message) == "table"
     then
-        queueControl(message.message)
-        return true
+        if
+            message.type == "control_relay" and
+            type(message.message) == "table"
+        then
+            queueControl(message.message)
+            return true
+
+        elseif
+            message.type == "quarry_relay" and
+            type(message.message) == "table"
+        then
+            queueQuarry(message.sender, message.message)
+            return true
+        end
     end
 
     return false
@@ -1015,6 +1294,7 @@ local function controlCheckpoint(state)
     )
 
     processControlQueue(state)
+    processQuarryQueue(state)
 
     if not reply then
         return false
@@ -1137,7 +1417,9 @@ local function initializeState()
         sequence = 0,
         tx = nil,
         lastControlToken = nil,
-        lastControlReply = nil
+        lastControlReply = nil,
+        quarrySequence = 0,
+        quarry = nil
     }
 
     saveMainState(state)
@@ -1156,7 +1438,78 @@ local function advanceTrip(state)
     end
 
     while true do
+        processQuarryQueue(state)
+
         if state.stage == "idle" or state.stage == "arrived" then
+            return
+        end
+
+        if state.stage == "quarry_contact" then
+            local geometry = quarryGeometry(state.current)
+
+            sendQuarryWireless({
+                type = "quarry_prepare",
+                version = 1,
+                jobToken = state.quarry.jobToken,
+                cairn = geometry.cairn,
+                drive1 = geometry.drive1,
+                dock = geometry.dock,
+                clear = geometry.clear,
+                seed = geometry.seed,
+                worldOrigin = geometry.worldOrigin,
+                chunk = geometry.chunk
+            })
+
+            waitLinkType(
+                "__quarry_wait__",
+                nil,
+                0.30
+            )
+
+            processQuarryQueue(state)
+            return
+        end
+
+        if state.stage == "quarry_launch" then
+            local geometry = quarryGeometry(state.current)
+
+            sendQuarryWireless({
+                type = "quarry_launch",
+                version = 1,
+                jobToken = state.quarry.jobToken,
+                cairn = geometry.cairn,
+                drive1 = geometry.drive1,
+                dock = geometry.dock,
+                clear = geometry.clear,
+                seed = geometry.seed,
+                worldOrigin = geometry.worldOrigin,
+                chunk = geometry.chunk
+            }, state.quarry.rmId)
+
+            waitLinkType(
+                "__quarry_wait__",
+                nil,
+                0.30
+            )
+
+            processQuarryQueue(state)
+            return
+        end
+
+        if state.stage == "quarry_wait" then
+            sendQuarryWireless({
+                type = "quarry_status_query",
+                version = 1,
+                jobToken = state.quarry.jobToken
+            }, state.quarry.rmId)
+
+            waitLinkType(
+                "__quarry_wait__",
+                nil,
+                0.50
+            )
+
+            processQuarryQueue(state)
             return
         end
 
@@ -1196,6 +1549,13 @@ local function advanceTrip(state)
             if state.routeMode == "oneway" then
                 state.stage = "arrived"
                 state.routeMode = "idle"
+                state.paused = false
+                saveMainState(state)
+                return
+
+            elseif state.routeMode == "quarry" then
+                state.stage = "quarry_contact"
+                state.quarry.phase = "CONTACT"
                 state.paused = false
                 saveMainState(state)
                 return
@@ -1253,6 +1613,11 @@ local function advanceTrip(state)
             state.stage = "arrived"
             state.routeMode = "idle"
             state.paused = false
+
+            if state.quarry then
+                state.quarry.phase = "RETURNED"
+            end
+
             saveMainState(state)
             return
 
@@ -1503,6 +1868,46 @@ local function forwardControllerReply(message)
     end
 end
 
+local function relayQuarryMessage(sender, message)
+    if type(message) ~= "table" then
+        return
+    end
+
+    rednet.send(
+        MASTER_ID,
+        {
+            type = "quarry_relay",
+            sender = sender,
+            message = message
+        },
+        LINK_PROTOCOL
+    )
+end
+
+local function sendQuarryFromSlave(message)
+    if
+        type(message) ~= "table" or
+        type(message.message) ~= "table"
+    then
+        return
+    end
+
+    local target = tonumber(message.target)
+
+    if target then
+        rednet.send(
+            target,
+            message.message,
+            QUARRY_PROTOCOL
+        )
+    else
+        rednet.broadcast(
+            message.message,
+            QUARRY_PROTOCOL
+        )
+    end
+end
+
 local function scanController(duration)
     local deadline = os.clock() + duration
 
@@ -1524,12 +1929,26 @@ local function scanController(duration)
             relayControllerMessage(message)
 
         elseif
+            protocol == QUARRY_PROTOCOL and
+            type(message) == "table"
+        then
+            relayQuarryMessage(sender, message)
+
+        elseif
             sender == MASTER_ID and
             protocol == LINK_PROTOCOL and
             type(message) == "table" and
             message.type == "control_reply"
         then
             forwardControllerReply(message)
+
+        elseif
+            sender == MASTER_ID and
+            protocol == LINK_PROTOCOL and
+            type(message) == "table" and
+            message.type == "quarry_wireless"
+        then
+            sendQuarryFromSlave(message)
         end
     end
 end
@@ -1599,6 +2018,12 @@ local function runSlave()
             type(message) == "table"
         then
             relayControllerMessage(message)
+
+        elseif
+            protocol == QUARRY_PROTOCOL and
+            type(message) == "table"
+        then
+            relayQuarryMessage(sender, message)
 
         elseif
             sender == MASTER_ID and
@@ -1719,6 +2144,9 @@ local function runSlave()
                     message.token
                 )
 
+            elseif message.type == "quarry_wireless" then
+                sendQuarryFromSlave(message)
+
             elseif message.type == "control_scan" then
                 term.setCursorPos(1, 9)
                 term.clearLine()
@@ -1788,6 +2216,7 @@ local function runMain()
     while true do
         receiveControlRelay(0.05)
         processControlQueue(state)
+        processQuarryQueue(state)
 
         if pendingAction == "update" then
             pendingAction = nil
@@ -1807,6 +2236,7 @@ local function runMain()
 
             receiveControlRelay(0.45)
             processControlQueue(state)
+            processQuarryQueue(state)
 
         else
             advanceTrip(state)
