@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 31
+local CAIRN_RELEASE = 32
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -103,7 +103,7 @@ end
 
 local moves = {
     forward = {
-        owner = SLAVE_ID,
+        owner = MASTER_ID,
         side = "back",
         dx = 0,
         dy = 0,
@@ -111,7 +111,7 @@ local moves = {
         world = "North"
     },
     back = {
-        owner = MASTER_ID,
+        owner = SLAVE_ID,
         side = "back",
         dx = 0,
         dy = 0,
@@ -153,7 +153,7 @@ local moves = {
 }
 
 local slaveMoves = {
-    forward = moves.forward,
+    back = moves.back,
     right = moves.right,
     down = moves.down
 }
