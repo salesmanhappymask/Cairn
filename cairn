@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 32
+local CAIRN_RELEASE = 33
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -9,7 +9,7 @@ local COMMAND_PROTOCOL = "cairn.drive.command"
 local UPDATE_PROTOCOL = "cairn.drive.update"
 local CONTROL_PROTOCOL = "cairn.nav.command"
 local CONTROL_REPLY_PROTOCOL = "cairn.nav.reply"
-local QUARRY_PROTOCOL = "cairn.quarry.v1"
+local QUARRY_PROTOCOL = "cairn.quarry.v2"
 
 local MAIN_STATE_FILE = "cairn_drive_state"
 local SLAVE_STATE_FILE = "cairn_drive1_state"
@@ -20,7 +20,7 @@ local MAIN_STATE_VERSION = 7
 local SLAVE_STATE_VERSION = 5
 
 local MASTER_WIRED_SIDE = "left"
-local MASTER_WIRELESS_SIDE = "top"
+local MASTER_WIRELESS_SIDE = "right"
 local SLAVE_WIRED_SIDE = "bottom"
 
 local PULSE_TIME = 0.25
@@ -30,7 +30,7 @@ local LINK_TIMEOUT = 0.5
 local LINK_ATTEMPTS = 3
 local MAX_RECOVERY_REBOOTS = 3
 local CONTROL_WINDOW = 0.30
-local CONTROL_BOOT_WINDOW = 1.25
+local CONTROL_BOOT_WINDOW = 0.10
 
 local controlQueue = {}
 local quarryQueue = {}
@@ -262,11 +262,11 @@ local function checkMainHardware()
     end
 
     if peripheral.getType(MASTER_WIRELESS_SIDE) ~= "modem" then
-        return false, "Drive2 requires its wireless modem on top."
+        return false, "Drive2 requires its wireless modem on right."
     end
 
     if modemWireless(MASTER_WIRELESS_SIDE) ~= true then
-        return false, "Drive2 top modem must be wireless."
+        return false, "Drive2 right modem must be wireless."
     end
 
     return true
@@ -930,53 +930,91 @@ local function copyPosition(value)
     }
 end
 
-local function chunkOffset(value)
-    local base = math.floor(value / 16) * 16
-    return value - base
-end
-
-local function isBottomLeftChunkCorner(position)
+local function gridPoint(value)
     return
-        type(position) == "table" and
-        type(position.x) == "number" and
-        type(position.z) == "number" and
-        chunkOffset(position.x) == 0 and
-        chunkOffset(position.z) == 15
+        type(value) == "table" and
+        type(value.x) == "number" and
+        type(value.z) == "number"
 end
 
-local function quarryGeometry(position)
+local function targetChunkSouthWest(position, gridSouthWest)
+    if type(position) ~= "table" or not gridPoint(gridSouthWest) then
+        return nil
+    end
+
+    local chunkX = math.floor((position.x - gridSouthWest.x) / 16)
+    local chunkZ = math.ceil((position.z - gridSouthWest.z) / 16)
+
+    return {
+        x = gridSouthWest.x + chunkX * 16,
+        z = gridSouthWest.z + chunkZ * 16,
+        deltaX = chunkX,
+        deltaZ = chunkZ
+    }
+end
+
+local function quarryGeometry(position, quarry)
+    local southWest = quarry and quarry.targetChunkSouthWest or nil
+
+    if not gridPoint(southWest) then
+        return nil
+    end
+
+    local groundY = position.y - 3
+    local worldOrigin = {
+        x = southWest.x - 1,
+        y = groundY,
+        z = southWest.z
+    }
+    local seed = {
+        x = worldOrigin.x,
+        y = groundY,
+        z = worldOrigin.z + 1
+    }
+    local dock = {
+        x = position.x,
+        y = position.y + 1,
+        z = position.z - 4
+    }
+
     return {
         cairn = copyPosition(position),
+        routeStart = copyPosition(quarry.routeStart),
+        gridSouthWest = {
+            x = quarry.gridSouthWest.x,
+            z = quarry.gridSouthWest.z
+        },
         drive1 = {
             x = position.x,
             y = position.y,
             z = position.z - 4
         },
-        dock = {
-            x = position.x,
-            y = position.y + 1,
-            z = position.z - 4
-        },
+        dock = dock,
         clear = {
-            x = position.x - 5,
-            y = position.y - 3,
-            z = position.z - 4
+            x = seed.x,
+            y = position.y + 2,
+            z = seed.z
         },
-        seed = {
-            x = position.x - 1,
-            y = position.y - 3,
-            z = position.z + 1
+        seed = seed,
+        idle = {
+            x = worldOrigin.x + 6,
+            y = groundY,
+            z = worldOrigin.z + 3
         },
-        worldOrigin = {
-            x = position.x - 1,
-            y = position.y - 3,
-            z = position.z
-        },
+        worldOrigin = worldOrigin,
         chunk = {
-            x = math.floor(position.x / 16),
-            z = math.floor(position.z / 16),
-            offsetX = chunkOffset(position.x),
-            offsetZ = chunkOffset(position.z)
+            southWest = {
+                x = southWest.x,
+                z = southWest.z
+            },
+            startSouthWest = {
+                x = quarry.startChunkSouthWest.x,
+                z = quarry.startChunkSouthWest.z
+            },
+            offsetX = position.x - southWest.x,
+            offsetZ = southWest.z - position.z,
+            deltaX = (southWest.x - quarry.startChunkSouthWest.x) / 16,
+            deltaZ = (southWest.z - quarry.startChunkSouthWest.z) / 16
         }
     }
 end
@@ -1074,7 +1112,7 @@ local function beginOneWay(state, x, y, z, cruise)
     )
 end
 
-local function beginQuarry(state, x, y, z, cruise)
+local function beginQuarry(state, x, y, z, cruise, gridSouthWest)
     state.quarrySequence = (tonumber(state.quarrySequence) or 0) + 1
     state.start = copyPosition(state.current)
     state.destination = {
@@ -1088,13 +1126,30 @@ local function beginQuarry(state, x, y, z, cruise)
     state.paused = false
     state.tx = nil
     state.lastMoveError = nil
+
+    local startSouthWest = targetChunkSouthWest(
+        state.start,
+        gridSouthWest
+    )
+    local targetSouthWest = targetChunkSouthWest(
+        state.destination,
+        gridSouthWest
+    )
+
     state.quarry = {
         phase = "TRAVEL",
         jobToken =
             "quarry:" ..
             tostring(MASTER_ID) ..
             ":" ..
-            tostring(state.quarrySequence)
+            tostring(state.quarrySequence),
+        routeStart = copyPosition(state.start),
+        gridSouthWest = {
+            x = gridSouthWest.x,
+            z = gridSouthWest.z
+        },
+        startChunkSouthWest = startSouthWest,
+        targetChunkSouthWest = targetSouthWest
     }
     saveMainState(state)
     logEvent(
@@ -1103,6 +1158,8 @@ local function beginQuarry(state, x, y, z, cruise)
         "mode=quarry start=" .. positionText(state.start) ..
         " destination=" .. positionText(state.destination) ..
         " cruise=" .. tostring(state.cruise) ..
+        " startChunkSW=" .. tostring(startSouthWest.x) .. "," .. tostring(startSouthWest.z) ..
+        " targetChunkSW=" .. tostring(targetSouthWest.x) .. "," .. tostring(targetSouthWest.z) ..
         " job=" .. tostring(state.quarry.jobToken)
     )
 end
@@ -1207,10 +1264,11 @@ local function handleControl(state, message)
         local y = integerValue(message.y)
         local z = integerValue(message.z)
         local cruise = integerValue(message.cruise)
-        local target = x and y and z and {
-            x = x,
-            y = y,
-            z = z
+        local gridX = integerValue(message.gridX)
+        local gridZ = integerValue(message.gridZ)
+        local gridSouthWest = gridX and gridZ and {
+            x = gridX,
+            z = gridZ
         } or nil
 
         if routeActive(state) or state.tx then
@@ -1219,14 +1277,11 @@ local function handleControl(state, message)
         elseif not x or not y or not z or not cruise then
             reply.message = "Coordinates must be whole numbers"
 
+        elseif not gridSouthWest then
+            reply.message = "Set the controller CHUNK GRID first"
+
         elseif cruise < state.current.y or cruise < y then
             reply.message = "Cruise Y is too low"
-
-        elseif not isBottomLeftChunkCorner(state.current) then
-            reply.message = "Current Drive2 position is not the chunk bottom-left corner"
-
-        elseif not isBottomLeftChunkCorner(target) then
-            reply.message = "Quarry destination must place Drive2 at chunk bottom-left"
 
         else
             beginQuarry(
@@ -1234,11 +1289,15 @@ local function handleControl(state, message)
                 x,
                 y,
                 z,
-                cruise
+                cruise,
+                gridSouthWest
             )
 
+            local sw = state.quarry.targetChunkSouthWest
             reply.ok = true
-            reply.message = "Quarry route accepted"
+            reply.message =
+                "Quarry route accepted; target chunk SW " ..
+                tostring(sw.x) .. "," .. tostring(sw.z)
         end
 
     elseif command == "return_origin" then
@@ -1633,17 +1692,20 @@ local function advanceTrip(state)
         end
 
         if state.stage == "quarry_contact" then
-            local geometry = quarryGeometry(state.current)
+            local geometry = quarryGeometry(state.current, state.quarry)
 
             sendQuarryWireless({
                 type = "quarry_prepare",
-                version = 1,
+                version = 2,
                 jobToken = state.quarry.jobToken,
                 cairn = geometry.cairn,
                 drive1 = geometry.drive1,
                 dock = geometry.dock,
                 clear = geometry.clear,
                 seed = geometry.seed,
+                idle = geometry.idle,
+                routeStart = geometry.routeStart,
+                gridSouthWest = geometry.gridSouthWest,
                 worldOrigin = geometry.worldOrigin,
                 chunk = geometry.chunk
             })
@@ -1659,17 +1721,20 @@ local function advanceTrip(state)
         end
 
         if state.stage == "quarry_launch" then
-            local geometry = quarryGeometry(state.current)
+            local geometry = quarryGeometry(state.current, state.quarry)
 
             sendQuarryWireless({
                 type = "quarry_launch",
-                version = 1,
+                version = 2,
                 jobToken = state.quarry.jobToken,
                 cairn = geometry.cairn,
                 drive1 = geometry.drive1,
                 dock = geometry.dock,
                 clear = geometry.clear,
                 seed = geometry.seed,
+                idle = geometry.idle,
+                routeStart = geometry.routeStart,
+                gridSouthWest = geometry.gridSouthWest,
                 worldOrigin = geometry.worldOrigin,
                 chunk = geometry.chunk
             }, state.quarry.rmId)
@@ -1687,7 +1752,7 @@ local function advanceTrip(state)
         if state.stage == "quarry_wait" then
             sendQuarryWireless({
                 type = "quarry_status_query",
-                version = 1,
+                version = 2,
                 jobToken = state.quarry.jobToken
             }, state.quarry.rmId)
 
@@ -1946,13 +2011,23 @@ local function receiveRemoteUpdate(firstMessage)
                     end
                 end
 
+                local rootDrive = fs.getDrive("")
+
+                for _, name in ipairs(fs.list("")) do
+                    local okDrive, drive = pcall(fs.getDrive, name)
+                    local writable = okDrive and drive == rootDrive and not fs.isReadOnly(name)
+
+                    if writable and name ~= stage then
+                        local ok, err = pcall(fs.delete, name)
+
+                        if not ok or fs.exists(name) then
+                            return false, "could not clear " .. name .. ": " .. tostring(err or "delete failed")
+                        end
+                    end
+                end
+
                 for _, name in ipairs(expected) do
                     local source = fs.combine(stage, name)
-
-                    if fs.exists(name) then
-                        fs.delete(name)
-                    end
-
                     fs.move(source, name)
                 end
 
@@ -1960,7 +2035,7 @@ local function receiveRemoteUpdate(firstMessage)
                     fs.delete(stage)
                 end
 
-                local h = fs.open(".cairn_version", "w")
+                local h = fs.open("cairn_version", "w")
 
                 if h then
                     h.write(tostring(version))
@@ -2121,6 +2196,14 @@ local function scanController(duration)
             type(message) == "table"
         then
             relayQuarryMessage(sender, message)
+
+        elseif
+            sender == MASTER_ID and
+            protocol == UPDATE_PROTOCOL and
+            type(message) == "table" and
+            message.type == "update_begin"
+        then
+            receiveRemoteUpdate(message)
 
         elseif
             sender == MASTER_ID and

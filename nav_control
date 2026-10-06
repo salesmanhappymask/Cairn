@@ -1,10 +1,11 @@
-local CAIRN_RELEASE = 32
+local CAIRN_RELEASE = 33
 
 local CONTROL_ID = 2705
 local SLAVE_ID = 2701
 
 local CONTROL_PROTOCOL = "cairn.nav.command"
 local CONTROL_REPLY_PROTOCOL = "cairn.nav.reply"
+local CONFIG_FILE = "nav_control.cfg"
 
 local COMMAND_SENDS = 28
 local COMMAND_INTERVAL = 0.075
@@ -25,6 +26,55 @@ local activity = "Ready"
 local detail = ""
 local lastStatus = nil
 local buttons = {}
+
+local function readConfig()
+    if not fs.exists(CONFIG_FILE) then
+        return {}
+    end
+
+    local h = fs.open(CONFIG_FILE, "r")
+
+    if not h then
+        return {}
+    end
+
+    local raw = h.readAll()
+    h.close()
+
+    local ok, value = pcall(textutils.unserialize, raw)
+
+    if not ok or type(value) ~= "table" then
+        return {}
+    end
+
+    return value
+end
+
+local function writeConfig(value)
+    local h = fs.open(CONFIG_FILE, "w")
+
+    if not h then
+        return false
+    end
+
+    h.write(textutils.serialize(value))
+    h.close()
+    return true
+end
+
+local config = readConfig()
+
+local function gridText()
+    if
+        type(config.gridSouthWest) == "table" and
+        type(config.gridSouthWest.x) == "number" and
+        type(config.gridSouthWest.z) == "number"
+    then
+        return tostring(config.gridSouthWest.x) .. "," .. tostring(config.gridSouthWest.z)
+    end
+
+    return "unset"
+end
 
 local function setBackground(value)
     local fn = term.setBackgroundColor or term.setBackgroundColour
@@ -183,105 +233,20 @@ local function drawButtons()
     local leftWidth = math.floor((width - gap) / 2)
     local rightX = leftWidth + gap + 1
 
-    addButton(
-        "destination",
-        "DESTINATION",
-        1,
-        7,
-        leftWidth,
-        8,
-        colors.blue
-    )
+    addButton("destination", "DESTINATION", 1, 7, leftWidth, 8, colors.blue)
+    addButton("quarry", "QUARRY", rightX, 7, width, 8, colors.lime)
+    addButton("pause", "PAUSE", 1, 9, leftWidth, 10, colors.orange)
+    addButton("resume", "RESUME", rightX, 9, width, 10, colors.green)
+    addButton("cancel", "CANCEL", 1, 11, leftWidth, 12, colors.red)
+    addButton("return", "RETURN", rightX, 11, width, 12, colors.purple)
+    addButton("position", "SET POSITION", 1, 13, leftWidth, 14, colors.cyan)
+    addButton("chunk", "CHUNK GRID", rightX, 13, width, 14, colors.cyan)
+    addButton("update", "UPDATE CAIRN", 1, 15, leftWidth, 16, colors.brown)
+    addButton("refresh", "REFRESH", rightX, 15, width, 16, colors.gray)
 
-    addButton(
-        "quarry",
-        "QUARRY",
-        rightX,
-        7,
-        width,
-        8,
-        colors.lime
-    )
-
-    addButton(
-        "pause",
-        "PAUSE",
-        1,
-        9,
-        leftWidth,
-        10,
-        colors.orange
-    )
-
-    addButton(
-        "resume",
-        "RESUME",
-        rightX,
-        9,
-        width,
-        10,
-        colors.green
-    )
-
-    addButton(
-        "cancel",
-        "CANCEL",
-        1,
-        11,
-        leftWidth,
-        12,
-        colors.red
-    )
-
-    addButton(
-        "return",
-        "RETURN",
-        rightX,
-        11,
-        width,
-        12,
-        colors.purple
-    )
-
-    addButton(
-        "position",
-        "SET POSITION",
-        1,
-        13,
-        leftWidth,
-        14,
-        colors.cyan
-    )
-
-    addButton(
-        "update",
-        "UPDATE",
-        rightX,
-        13,
-        width,
-        14,
-        colors.brown
-    )
-
-    addButton(
-        "refresh",
-        "REFRESH",
-        1,
-        15,
-        leftWidth,
-        16,
-        colors.gray
-    )
-
-    addButton(
-        "exit",
-        "EXIT",
-        rightX,
-        15,
-        width,
-        16,
-        colors.gray
-    )
+    if height >= 20 then
+        addButton("navupdate", "UPDATE NAV", 1, 17, width, 18, colors.lightBlue)
+    end
 end
 
 local function draw()
@@ -317,30 +282,30 @@ local function draw()
             (lastStatus.paused and "PAUSED" or "RUNNING")
         )
 
+        local tail = "MOVE none"
+
         if lastStatus.quarry then
-            print(
+            tail =
                 "QRY " ..
                 tostring(lastStatus.quarry.phase or "?") ..
                 (lastStatus.quarry.error and
                     (" " .. tostring(lastStatus.quarry.error)) or
                     "")
-            )
         elseif lastStatus.transaction then
-            print(
+            tail =
                 "MOVE " ..
                 tostring(lastStatus.transaction.direction) ..
                 " " ..
                 tostring(lastStatus.transaction.phase)
-            )
-        else
-            print("MOVE none")
         end
+
+        print("GRID " .. gridText() .. "  " .. tail)
     else
         print("Platform status unavailable")
         print("POS unknown")
         print("DST unknown")
         print("STG unknown")
-        print("MOVE unknown")
+        print("GRID " .. gridText() .. "  MOVE unknown")
     end
 
     drawButtons()
@@ -505,10 +470,19 @@ local function quarry()
         "Current: " ..
         position(lastStatus and lastStatus.current)
     )
+    print("Chunk grid SW: " .. gridText())
     print("")
-    print("Drive2 must start and arrive at the")
-    print("bottom-left block inside a chunk.")
-    print("")
+
+    if
+        type(config.gridSouthWest) ~= "table" or
+        type(config.gridSouthWest.x) ~= "number" or
+        type(config.gridSouthWest.z) ~= "number"
+    then
+        print("Set CHUNK GRID before starting Quarry.")
+        print("Press Enter to return.")
+        read()
+        return nil
+    end
 
     local x = askInteger("X")
     local y = askInteger("Y")
@@ -521,10 +495,51 @@ local function quarry()
             x = x,
             y = y,
             z = z,
-            cruise = cruise
+            cruise = cruise,
+            gridX = config.gridSouthWest.x,
+            gridZ = config.gridSouthWest.z
         },
         "QUARRY"
     )
+end
+
+local function setChunkGrid()
+    resetColors()
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("SET CHUNK GRID")
+    print("")
+    print("Enter the southwest corner of the chunk")
+    print("that currently contains Drive2.")
+    print("")
+
+    local x = askInteger("Southwest X")
+    local z = askInteger("Southwest Z")
+
+    if lastStatus and type(lastStatus.current) == "table" then
+        local offsetX = lastStatus.current.x - x
+        local offsetZ = z - lastStatus.current.z
+
+        if offsetX < 0 or offsetX >= 16 or offsetZ < 0 or offsetZ >= 16 then
+            print("")
+            print("That is not the southwest corner of")
+            print("Drive2's current 16x16 chunk.")
+            print("Press Enter to return.")
+            read()
+            return nil
+        end
+    end
+
+    config.gridSouthWest = {x = x, z = z}
+
+    if not writeConfig(config) then
+        setActivity("Chunk grid failed", "Could not save nav_control.cfg")
+        return nil
+    end
+
+    setActivity("Chunk grid saved", tostring(x) .. "," .. tostring(z))
+    return true
 end
 
 local function setPosition()
@@ -610,6 +625,40 @@ local function updatePlatform()
     )
 end
 
+local function updateController()
+    resetColors()
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("UPDATE HANDHELD NAV")
+    print("")
+    print("This clears all writable files")
+    print("and reinstalls from the Cairn repo.")
+    print("Chunk-grid calibration will be cleared.")
+    print("")
+    print("Type YES to continue.")
+
+    local answer = string.upper(read() or "")
+
+    if answer ~= "YES" then
+        setActivity("Nav update cancelled", "No changes made")
+        return nil
+    end
+
+    if not fs.exists("nav_update") then
+        setActivity("Nav update unavailable", "Install nav_update once")
+        return nil
+    end
+
+    local ok = shell.run("nav_update")
+
+    if not ok then
+        setActivity("Nav update failed", "Run nav_update from shell")
+    end
+
+    return nil
+end
+
 local function handle(id)
     local reply = nil
 
@@ -677,6 +726,15 @@ local function handle(id)
         )
         reply = setPosition()
 
+    elseif id == "chunk" then
+        setActivity(
+            "Chunk grid selected",
+            "Entering southwest corner"
+        )
+        setChunkGrid()
+        draw()
+        return true
+
     elseif id == "update" then
         setActivity(
             "Update selected",
@@ -686,6 +744,15 @@ local function handle(id)
 
     elseif id == "refresh" then
         refreshStatus()
+        return true
+
+    elseif id == "navupdate" then
+        setActivity(
+            "Nav update selected",
+            "Awaiting confirmation"
+        )
+        updateController()
+        draw()
         return true
 
     elseif id == "exit" then
@@ -773,7 +840,9 @@ while true do
             ["4"] = "cancel",
             ["5"] = "return",
             ["6"] = "position",
+            ["c"] = "chunk",
             ["u"] = "update",
+            ["n"] = "navupdate",
             ["r"] = "refresh",
             ["q"] = "exit"
         }

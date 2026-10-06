@@ -1,6 +1,6 @@
 local args = {...}
 
-local RELEASE_VERSION = 32
+local RELEASE_VERSION = 33
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
 
@@ -347,14 +347,38 @@ local function stageRelease()
     return downloaded
 end
 
+local function wipeWritableRoot(keep)
+    keep = keep or {}
+    local rootDrive = fs.getDrive("")
+
+    for _, name in ipairs(fs.list("")) do
+        local okDrive, drive = pcall(fs.getDrive, name)
+        local writable = okDrive and drive == rootDrive and not fs.isReadOnly(name)
+
+        if writable and not keep[name] then
+            local ok, err = pcall(fs.delete, name)
+
+            if not ok or fs.exists(name) then
+                return false, "Could not clear " .. name .. ": " .. tostring(err or "delete failed")
+            end
+        end
+    end
+
+    return true
+end
+
 local function installStagedFollower()
+    local wiped, wipeErr = wipeWritableRoot({
+        [STAGE] = true,
+        [TEMP] = true
+    })
+
+    if not wiped then
+        error(wipeErr)
+    end
+
     for _, name in ipairs(FILES) do
         local source = fs.combine(STAGE, name)
-
-        if fs.exists(name) then
-            fs.delete(name)
-        end
-
         fs.move(source, name)
     end
 
@@ -362,10 +386,15 @@ local function installStagedFollower()
         fs.delete(STAGE)
     end
 
+    if fs.exists(TEMP) then
+        fs.delete(TEMP)
+    end
+
     writeAll(VERSION_FILE, tostring(RELEASE_VERSION))
 
     print("Drive1 bootstrap complete")
     print("Installed release: v" .. RELEASE_VERSION)
+    print("Writable root was cleared before reinstalling.")
     print("Rebooting...")
     sleep(1)
     os.reboot()
@@ -510,21 +539,47 @@ local function applyMain()
         return
     end
 
-    print("Drive1 slave synchronized")
+    print("Drive1 first synchronization complete")
+    print("Waiting for Drive1 to reboot into v" .. RELEASE_VERSION .. "...")
+    sleep(2)
+
+    local cleanPushed = false
+    local cleanError = nil
+
+    for attempt = 1, 3 do
+        print("Drive1 clean reinstall pass " .. tostring(attempt) .. "/3")
+        cleanPushed, cleanError = pushSlave(downloaded)
+
+        if cleanPushed then
+            break
+        end
+
+        if attempt < 3 then
+            sleep(1.5)
+        end
+    end
+
+    if not cleanPushed then
+        fs.delete(STAGE)
+        print("Drive1 clean reinstall pass failed")
+        print(cleanError or "")
+        print("Nothing was changed on Drive2")
+        return
+    end
+
+    print("Drive1 clean reinstall verified")
     print("Installing Drive2...")
 
-    local preserve = {
+    local wiped, wipeErr = wipeWritableRoot({
         [TEMP] = true,
-        [STAGE] = true,
-        [STATE_FILE] = true,
-        ["logs"] = true,
-        ["diagnostics.txt"] = true
-    }
+        [STAGE] = true
+    })
 
-    for _, name in ipairs(fs.list("")) do
-        if not preserve[name] and fs.getDrive(name) == "hdd" and not fs.isReadOnly(name) then
-            fs.delete(name)
-        end
+    if not wiped then
+        fs.delete(STAGE)
+        print("Drive2 clean reinstall failed")
+        print(wipeErr or "")
+        return
     end
 
     for _, name in ipairs(FILES) do
@@ -541,12 +596,17 @@ local function applyMain()
         fs.delete(STAGE)
     end
 
+    if fs.exists(TEMP) then
+        fs.delete(TEMP)
+    end
+
     if not writeAll(VERSION_FILE, tostring(RELEASE_VERSION)) then
         print("Installed files but could not save version record")
         return
     end
 
     print("Drive2 synchronized")
+    print("Writable root was cleared before reinstalling.")
     print("CAIRN update complete")
     print("Installed release: v" .. RELEASE_VERSION)
     print("Rebooting...")
