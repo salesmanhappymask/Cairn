@@ -1,4 +1,4 @@
-local RELEASE_VERSION = 34
+local RELEASE_VERSION = 35
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
 local FILES = {"startup", "nav_control", "nav_update"}
 
