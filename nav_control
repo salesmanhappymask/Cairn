@@ -1,13 +1,13 @@
-local CAIRN_RELEASE = 26
+local CAIRN_RELEASE = 27
 
 local CONTROL_ID = 2705
-local MASTER_ID = 2700
+local SLAVE_ID = 2701
 
 local CONTROL_PROTOCOL = "cairn.nav.command"
 local CONTROL_REPLY_PROTOCOL = "cairn.nav.reply"
 
-local REQUEST_TIMEOUT = 1.0
-local REQUEST_ATTEMPTS = 6
+local BROADCAST_ATTEMPTS = 18
+local BROADCAST_WAIT = 0.10
 
 local SIDES = {
     "top",
@@ -19,6 +19,9 @@ local SIDES = {
 }
 
 local requestSequence = 0
+local activity = "Ready"
+local lastStatus = nil
+local buttons = {}
 
 local function findWirelessModem()
     for _, side in ipairs(SIDES) do
@@ -63,19 +66,221 @@ local function nextToken()
         tostring(math.floor(os.clock() * 1000))
 end
 
-local function request(command)
+local function positionText(position)
+    if type(position) ~= "table" then
+        return "unknown"
+    end
+
+    return
+        "X " ..
+        tostring(position.x) ..
+        " Y " ..
+        tostring(position.y) ..
+        " Z " ..
+        tostring(position.z)
+end
+
+local function trim(value, width)
+    value = tostring(value or "")
+
+    if #value <= width then
+        return value
+    end
+
+    if width <= 3 then
+        return string.sub(value, 1, width)
+    end
+
+    return string.sub(value, 1, width - 3) .. "..."
+end
+
+local function writeLine(y, value)
+    local width = term.getSize()
+
+    term.setCursorPos(1, y)
+    term.clearLine()
+    write(trim(value, width))
+end
+
+local function drawActivity()
+    local _, height = term.getSize()
+    writeLine(height, "STATUS: " .. activity)
+end
+
+local function setActivity(value)
+    activity = value
+    drawActivity()
+end
+
+local function setBackground(value)
+    local fn = term.setBackgroundColor or term.setBackgroundColour
+
+    if fn then
+        fn(value)
+    end
+end
+
+local function setText(value)
+    local fn = term.setTextColor or term.setTextColour
+
+    if fn then
+        fn(value)
+    end
+end
+
+local function resetColors()
+    setBackground(colors.black)
+    setText(colors.white)
+end
+
+local function addButton(id, label, x1, y1, x2, y2, background)
+    buttons[#buttons + 1] = {
+        id = id,
+        x1 = x1,
+        y1 = y1,
+        x2 = x2,
+        y2 = y2
+    }
+
+    setBackground(background or colors.gray)
+    setText(colors.white)
+
+    for y = y1, y2 do
+        term.setCursorPos(x1, y)
+        write(string.rep(" ", x2 - x1 + 1))
+    end
+
+    local width = x2 - x1 + 1
+    local text = trim(label, width - 2)
+    local tx = x1 + math.floor((width - #text) / 2)
+    local ty = y1 + math.floor((y2 - y1) / 2)
+
+    term.setCursorPos(tx, ty)
+    write(text)
+
+    resetColors()
+end
+
+local function drawButtons()
+    buttons = {}
+
+    local width, height = term.getSize()
+    local gap = 1
+    local left = 1
+    local usable = width - 2 * left - 2 * gap
+    local buttonWidth = math.floor(usable / 3)
+
+    if buttonWidth < 10 then
+        buttonWidth = 10
+    end
+
+    local x1 = left
+    local x2 = x1 + buttonWidth + gap
+    local x3 = x2 + buttonWidth + gap
+    local row1 = 9
+    local row2 = 12
+    local row3 = 15
+
+    addButton("destination", "DESTINATION", x1, row1, x1 + buttonWidth - 1, row1 + 1, colors.blue)
+    addButton("pause", "PAUSE", x2, row1, x2 + buttonWidth - 1, row1 + 1, colors.orange)
+    addButton("resume", "RESUME", x3, row1, math.min(width, x3 + buttonWidth - 1), row1 + 1, colors.green)
+
+    addButton("cancel", "CANCEL", x1, row2, x1 + buttonWidth - 1, row2 + 1, colors.red)
+    addButton("return_origin", "RETURN", x2, row2, x2 + buttonWidth - 1, row2 + 1, colors.purple)
+    addButton("position", "SET POSITION", x3, row2, math.min(width, x3 + buttonWidth - 1), row2 + 1, colors.cyan)
+
+    addButton("update", "UPDATE", x1, row3, x1 + buttonWidth - 1, row3 + 1, colors.brown)
+    addButton("refresh", "REFRESH", x2, row3, x2 + buttonWidth - 1, row3 + 1, colors.gray)
+    addButton("exit", "EXIT", x3, row3, math.min(width, x3 + buttonWidth - 1), row3 + 1, colors.gray)
+
+    if height < 18 then
+        activity = trim(activity, width - 8)
+    end
+end
+
+local function draw()
+    resetColors()
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("CAIRN NAV CONTROL 2705")
+
+    if lastStatus then
+        print(
+            "Drive1 relay: ONLINE   Platform v" ..
+            tostring(lastStatus.release or "?")
+        )
+        print("Current: " .. positionText(lastStatus.current))
+        print("Dest:    " .. positionText(lastStatus.destination))
+        print(
+            "Cruise " ..
+            tostring(lastStatus.cruise or "?") ..
+            "  Mode " ..
+            tostring(lastStatus.routeMode or "idle")
+        )
+        print(
+            "Stage " ..
+            tostring(lastStatus.stage or "idle") ..
+            "  Paused " ..
+            (lastStatus.paused and "YES" or "NO")
+        )
+
+        if lastStatus.transaction then
+            print(
+                "Move " ..
+                tostring(lastStatus.transaction.direction) ..
+                " / " ..
+                tostring(lastStatus.transaction.phase)
+            )
+        else
+            print("Move none")
+        end
+    else
+        print("Drive1 relay/platform: NO STATUS")
+        print("Current: unknown")
+        print("Dest:    unknown")
+        print("Cruise ?  Mode ?")
+        print("Stage ?  Paused ?")
+        print("Move unknown")
+    end
+
+    drawButtons()
+    drawActivity()
+end
+
+local function request(command, label, quiet)
     local token = nextToken()
 
     command.token = token
 
-    for attempt = 1, REQUEST_ATTEMPTS do
-        rednet.send(
-            MASTER_ID,
+    local relaySeen = false
+
+    for attempt = 1, BROADCAST_ATTEMPTS do
+        if not quiet then
+            if relaySeen then
+                setActivity(
+                    "Drive1 received " ..
+                    label ..
+                    "; awaiting Drive2"
+                )
+            else
+                setActivity(
+                    "Broadcasting " ..
+                    label ..
+                    " " ..
+                    attempt ..
+                    "/" ..
+                    BROADCAST_ATTEMPTS
+                )
+            end
+        end
+
+        rednet.broadcast(
             command,
             CONTROL_PROTOCOL
         )
 
-        local deadline = os.clock() + REQUEST_TIMEOUT
+        local deadline = os.clock() + BROADCAST_WAIT
 
         while os.clock() < deadline do
             local sender, message = rednet.receive(
@@ -88,16 +293,67 @@ local function request(command)
             end
 
             if
-                sender == MASTER_ID and
+                sender == SLAVE_ID and
                 type(message) == "table" and
                 message.token == token
             then
-                return message
+                if message.type == "relay_ack" then
+                    relaySeen = true
+
+                    if not quiet then
+                        setActivity(
+                            "Drive1 heard " ..
+                            label ..
+                            "; relaying"
+                        )
+                    end
+                else
+                    if not quiet then
+                        setActivity(
+                            message.message or
+                            (label .. " acknowledged")
+                        )
+                    end
+
+                    return message
+                end
             end
         end
     end
 
+    if relaySeen then
+        setActivity(
+            "Drive1 heard command; no Drive2 reply yet"
+        )
+    else
+        setActivity(
+            "No response from Drive1 relay"
+        )
+    end
+
     return nil
+end
+
+local function refreshStatus(quiet)
+    local reply = request(
+        {
+            command = "status"
+        },
+        "STATUS",
+        quiet == true
+    )
+
+    if reply and reply.type == "status" then
+        lastStatus = reply
+
+        if quiet then
+            activity = "Live status updated"
+        end
+    end
+
+    draw()
+
+    return reply
 end
 
 local function askInteger(label)
@@ -114,106 +370,14 @@ local function askInteger(label)
     end
 end
 
-local function positionText(position)
-    if type(position) ~= "table" then
-        return "unknown"
-    end
-
-    return
-        "X " ..
-        tostring(position.x) ..
-        "  Y " ..
-        tostring(position.y) ..
-        "  Z " ..
-        tostring(position.z)
-end
-
-local function getStatus()
-    return request({
-        command = "status"
-    })
-end
-
-local function draw(status, wirelessSide)
-    term.clear()
-    term.setCursorPos(1, 1)
-
-    print("CAIRN NAV CONTROL")
-    print("Console 2705")
-    print("Control v" .. CAIRN_RELEASE)
-    print("Wireless modem: " .. wirelessSide)
-    print("")
-
-    if not status then
-        print("Drive2 / 2700: OFFLINE")
-        print("")
-        print("R - Retry")
-        print("Q - Exit")
-        return
-    end
-
-    print(
-        "Drive2 / 2700: ONLINE  v" ..
-        tostring(status.release or "?")
-    )
-    print("Current: " .. positionText(status.current))
-
-    if status.destination then
-        print("Dest:    " .. positionText(status.destination))
-    end
-
-    print("Cruise Y: " .. tostring(status.cruise or "?"))
-    print("Mode: " .. tostring(status.routeMode or "idle"))
-    print("Stage: " .. tostring(status.stage or "idle"))
-    print("Paused: " .. (status.paused and "YES" or "NO"))
-
-    if status.transaction then
-        print(
-            "Move: " ..
-            tostring(status.transaction.direction) ..
-            " / " ..
-            tostring(status.transaction.phase)
-        )
-    end
-
-    print("")
-    print("1 - Set one-way destination")
-    print("2 - Pause route")
-    print("3 - Resume route")
-    print("4 - Cancel route")
-    print("5 - Return to route origin")
-    print("6 - Set current position")
-    print("U - Force platform update")
-    print("R - Refresh")
-    print("Q - Exit")
-end
-
-local function showReply(reply)
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("CAIRN NAV CONTROL")
-    print("")
-
-    if not reply then
-        print("No response from Drive2.")
-    elseif reply.ok then
-        print(reply.message or "Command accepted.")
-    else
-        print(reply.message or "Command rejected.")
-    end
-
-    print("")
-    print("Press Enter.")
-    read()
-end
-
-local function setDestination(status)
+local function commandDestination()
+    resetColors()
     term.clear()
     term.setCursorPos(1, 1)
 
     print("ONE-WAY DESTINATION")
     print("")
-    print("Current: " .. positionText(status and status.current))
+    print("Current: " .. positionText(lastStatus and lastStatus.current))
     print("")
 
     local x = askInteger("Destination X")
@@ -221,57 +385,178 @@ local function setDestination(status)
     local z = askInteger("Destination Z")
     local cruise = askInteger("Cruise altitude Y")
 
-    return request({
-        command = "set_destination",
-        x = x,
-        y = y,
-        z = z,
-        cruise = cruise
-    })
+    activity = "Destination selected"
+
+    return request(
+        {
+            command = "set_destination",
+            x = x,
+            y = y,
+            z = z,
+            cruise = cruise
+        },
+        "DESTINATION",
+        false
+    )
 end
 
-local function setPosition()
+local function commandPosition()
+    resetColors()
     term.clear()
     term.setCursorPos(1, 1)
 
     print("SET AUTHORITATIVE POSITION")
     print("")
-    print("Only use this when the platform is physically")
-    print("at the coordinates you enter.")
+    print("Use only when the platform is physically")
+    print("at the coordinates entered.")
     print("")
 
     local x = askInteger("X")
     local y = askInteger("Y")
     local z = askInteger("Z")
 
-    return request({
-        command = "set_position",
-        x = x,
-        y = y,
-        z = z
-    })
+    activity = "Position selected"
+
+    return request(
+        {
+            command = "set_position",
+            x = x,
+            y = y,
+            z = z
+        },
+        "POSITION",
+        false
+    )
 end
 
-local function returnOrigin(status)
+local function commandReturn()
+    resetColors()
     term.clear()
     term.setCursorPos(1, 1)
 
     print("RETURN TO ROUTE ORIGIN")
     print("")
-
-    if status and status.origin then
-        print("Origin: " .. positionText(status.origin))
-    else
-        print("Origin: unknown")
-    end
-
+    print(
+        "Origin: " ..
+        positionText(lastStatus and lastStatus.origin)
+    )
     print("")
+
     local cruise = askInteger("Cruise altitude Y")
 
-    return request({
-        command = "return_origin",
-        cruise = cruise
-    })
+    activity = "Return selected"
+
+    return request(
+        {
+            command = "return_origin",
+            cruise = cruise
+        },
+        "RETURN",
+        false
+    )
+end
+
+local function commandUpdate()
+    resetColors()
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    print("FORCE PLATFORM UPDATE")
+    print("")
+    print("Drive1 will relay this to Drive2.")
+    print("Drive2 will update Drive1, then itself.")
+    print("")
+    print("Type YES to continue.")
+
+    local answer = string.upper(read() or "")
+
+    if answer ~= "YES" then
+        activity = "Update cancelled"
+        return nil
+    end
+
+    activity = "Update selected"
+
+    return request(
+        {
+            command = "force_update"
+        },
+        "UPDATE",
+        false
+    )
+end
+
+local function handleAction(id)
+    if id == "destination" then
+        commandDestination()
+
+    elseif id == "pause" then
+        setActivity("Pause selected")
+        request(
+            {
+                command = "pause"
+            },
+            "PAUSE",
+            false
+        )
+
+    elseif id == "resume" then
+        setActivity("Resume selected")
+        request(
+            {
+                command = "resume"
+            },
+            "RESUME",
+            false
+        )
+
+    elseif id == "cancel" then
+        setActivity("Cancel selected")
+        request(
+            {
+                command = "cancel"
+            },
+            "CANCEL",
+            false
+        )
+
+    elseif id == "return_origin" then
+        commandReturn()
+
+    elseif id == "position" then
+        commandPosition()
+
+    elseif id == "update" then
+        commandUpdate()
+
+    elseif id == "refresh" then
+        setActivity("Refresh selected")
+        refreshStatus(false)
+
+    elseif id == "exit" then
+        return false
+    end
+
+    if id ~= "refresh" then
+        refreshStatus(true)
+    end
+
+    return true
+end
+
+local function clickedButton(x, y)
+    for _, button in ipairs(buttons) do
+        if
+            x >= button.x1 and
+            x <= button.x2 and
+            y >= button.y1 and
+            y <= button.y2
+        then
+            return button.id
+        end
+    end
+
+    return nil
 end
 
 if os.getComputerID() ~= CONTROL_ID then
@@ -279,7 +564,7 @@ if os.getComputerID() ~= CONTROL_ID then
     term.setCursorPos(1, 1)
     print("CAIRN NAV CONTROL")
     print("")
-    print("This program is reserved for computer 2705.")
+    print("Reserved for computer 2705.")
     print("Current ID: " .. os.getComputerID())
     return
 end
@@ -295,65 +580,54 @@ if not wirelessSide then
     return
 end
 
+activity = "Wireless modem " .. wirelessSide
+refreshStatus(false)
+
+local refreshTimer = os.startTimer(1.5)
+
 while true do
-    local status = getStatus()
+    local event, a, b, c = os.pullEvent()
 
-    draw(status, wirelessSide)
+    if event == "mouse_click" then
+        local id = clickedButton(b, c)
 
-    local event, value = os.pullEvent()
-
-    if event == "char" then
-        local key = string.lower(value)
-
-        if key == "q" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            print("CAIRN control offline")
-            return
-
-        elseif key == "r" then
-
-        elseif status and key == "1" then
-            showReply(setDestination(status))
-
-        elseif status and key == "2" then
-            showReply(request({
-                command = "pause"
-            }))
-
-        elseif status and key == "3" then
-            showReply(request({
-                command = "resume"
-            }))
-
-        elseif status and key == "4" then
-            showReply(request({
-                command = "cancel"
-            }))
-
-        elseif status and key == "5" then
-            showReply(returnOrigin(status))
-
-        elseif status and key == "6" then
-            showReply(setPosition())
-
-        elseif status and key == "u" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            print("FORCE PLATFORM UPDATE")
-            print("")
-            print("Drive2 will pause the route, update Drive1,")
-            print("then update and reboot itself.")
-            print("")
-            print("Type YES to continue.")
-
-            local answer = string.upper(read() or "")
-
-            if answer == "YES" then
-                showReply(request({
-                    command = "force_update"
-                }))
+        if id then
+            if not handleAction(id) then
+                break
             end
+
+            refreshTimer = os.startTimer(1.5)
         end
+
+    elseif event == "char" then
+        local key = string.lower(a)
+        local map = {
+            ["1"] = "destination",
+            ["2"] = "pause",
+            ["3"] = "resume",
+            ["4"] = "cancel",
+            ["5"] = "return_origin",
+            ["6"] = "position",
+            ["u"] = "update",
+            ["r"] = "refresh",
+            ["q"] = "exit"
+        }
+
+        if map[key] then
+            if not handleAction(map[key]) then
+                break
+            end
+
+            refreshTimer = os.startTimer(1.5)
+        end
+
+    elseif event == "timer" and a == refreshTimer then
+        refreshStatus(true)
+        refreshTimer = os.startTimer(1.5)
     end
 end
+
+resetColors()
+term.clear()
+term.setCursorPos(1, 1)
+print("CAIRN control offline")

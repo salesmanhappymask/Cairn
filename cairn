@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 26
+local CAIRN_RELEASE = 27
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -14,18 +14,22 @@ local SLAVE_STATE_FILE = "cairn_drive1_state"
 local LEGACY_MAIN_STATE_FILE = ".cairn_drive.tmp"
 local LEGACY_SLAVE_STATE_FILE = ".cairn_drive1.tmp"
 
-local MAIN_STATE_VERSION = 4
-local SLAVE_STATE_VERSION = 2
+local MAIN_STATE_VERSION = 5
+local SLAVE_STATE_VERSION = 3
 
 local MASTER_WIRED_SIDE = "left"
-local MASTER_WIRELESS_SIDE = "top"
 local SLAVE_WIRED_SIDE = "bottom"
+local CONTROL_SCAN_TIME = 0.35
+local CONTROL_BOOT_SCAN_TIME = 1.0
 
 local PULSE_TIME = 0.25
 local MOVE_SETTLE_TIME = 0.25
 local LINK_TIMEOUT = 0.5
 local LINK_ATTEMPTS = 3
 local MAX_RECOVERY_REBOOTS = 3
+
+local controlInbox = {}
+local pendingControlAction = nil
 
 local moves = {
     forward = {
@@ -186,14 +190,6 @@ local function checkMainHardware()
         return false, "Drive2 left modem must be wired."
     end
 
-    if peripheral.getType(MASTER_WIRELESS_SIDE) ~= "modem" then
-        return false, "Drive2 requires its wireless modem on top."
-    end
-
-    if modemWireless(MASTER_WIRELESS_SIDE) ~= true then
-        return false, "Drive2 top modem must be wireless."
-    end
-
     return true
 end
 
@@ -209,6 +205,32 @@ local function checkSlaveHardware()
     return true
 end
 
+local function findSlaveWireless()
+    local sides = {
+        "top",
+        "front",
+        "back",
+        "left",
+        "right"
+    }
+
+    for _, side in ipairs(sides) do
+        if peripheral.getType(side) == "modem" then
+            local ok, wireless = pcall(
+                peripheral.call,
+                side,
+                "isWireless"
+            )
+
+            if ok and wireless == true then
+                return side
+            end
+        end
+    end
+
+    return nil
+end
+
 local function saveMainState(state)
     return writeTable(MAIN_STATE_FILE, state)
 end
@@ -220,7 +242,7 @@ local function loadMainState()
         return nil
     end
 
-    if state.version == 3 then
+    if state.version == 3 or state.version == 4 then
         state.version = MAIN_STATE_VERSION
         state.paused = false
         state.routeMode = state.routeMode or "roundtrip"
@@ -249,7 +271,21 @@ end
 local function loadSlaveState()
     local state = readTable(SLAVE_STATE_FILE)
 
-    if type(state) ~= "table" or state.version ~= SLAVE_STATE_VERSION then
+    if type(state) ~= "table" then
+        return {
+            version = SLAVE_STATE_VERSION,
+            boot = 0,
+            tx = nil
+        }
+    end
+
+    if state.version == 2 then
+        state.version = SLAVE_STATE_VERSION
+        writeTable(SLAVE_STATE_FILE, state)
+        return state
+    end
+
+    if state.version ~= SLAVE_STATE_VERSION then
         return {
             version = SLAVE_STATE_VERSION,
             boot = 0,
@@ -348,7 +384,9 @@ local function waitLinkType(expected, token, timeout)
         end
 
         if sender == SLAVE_ID and type(message) == "table" then
-            if message.type == expected then
+            if message.type == "control_relay" and type(message.message) == "table" then
+                controlInbox[#controlInbox + 1] = message.message
+            elseif message.type == expected then
                 if token == nil or message.token == token then
                     return message
                 end
@@ -829,9 +867,13 @@ local function sendControlReply(token, payload)
     payload.release = CAIRN_RELEASE
 
     rednet.send(
-        CONTROL_ID,
-        payload,
-        CONTROL_REPLY_PROTOCOL
+        SLAVE_ID,
+        {
+            type = "control_result",
+            token = token,
+            payload = payload
+        },
+        LINK_PROTOCOL
     )
 end
 
@@ -992,17 +1034,95 @@ local function handleControl(state, message)
     return action
 end
 
+local function processControlInbox(state)
+    local changed = false
+
+    while #controlInbox > 0 do
+        local message = table.remove(controlInbox, 1)
+
+        if type(message) == "table" then
+            local command = tostring(message.command or "")
+            local action = handleControl(state, message)
+
+            if action then
+                pendingControlAction = action
+            end
+
+            if command ~= "status" then
+                changed = true
+            end
+        end
+    end
+
+    return changed
+end
+
 local function pollControl(state, timeout)
+    if #controlInbox > 0 then
+        processControlInbox(state)
+        return pendingControlAction
+    end
+
     local sender, message = rednet.receive(
-        CONTROL_PROTOCOL,
+        LINK_PROTOCOL,
         timeout
     )
 
-    if sender ~= CONTROL_ID then
-        return nil
+    if
+        sender == SLAVE_ID and
+        type(message) == "table" and
+        message.type == "control_relay" and
+        type(message.message) == "table"
+    then
+        controlInbox[#controlInbox + 1] = message.message
+        processControlInbox(state)
     end
 
-    return handleControl(state, message)
+    return pendingControlAction
+end
+
+local function controlCheckpoint(state)
+    local token =
+        "control:" ..
+        tostring(MASTER_ID) ..
+        ":" ..
+        tostring(math.floor(os.clock() * 1000))
+
+    rednet.send(
+        SLAVE_ID,
+        {
+            type = "control_window",
+            token = token,
+            duration = CONTROL_SCAN_TIME
+        },
+        LINK_PROTOCOL
+    )
+
+    waitLinkType(
+        "control_window_done",
+        token,
+        CONTROL_SCAN_TIME + 0.75
+    )
+
+    local changed = processControlInbox(state)
+
+    if pendingControlAction then
+        return false
+    end
+
+    if changed then
+        return false
+    end
+
+    if state.paused then
+        return false
+    end
+
+    if not routeActive(state) then
+        return false
+    end
+
+    return true
 end
 
 local function advanceTrip(state)
@@ -1020,6 +1140,10 @@ local function advanceTrip(state)
             return
 
         elseif state.stage == "out_climb" then
+            if not controlCheckpoint(state) then
+                return
+            end
+
             if moveYTo(state, state.cruise) then
                 return
             end
@@ -1028,6 +1152,10 @@ local function advanceTrip(state)
             saveMainState(state)
 
         elseif state.stage == "out_x" then
+            if not controlCheckpoint(state) then
+                return
+            end
+
             if moveXTo(state, state.destination.x) then
                 return
             end
@@ -1036,6 +1164,10 @@ local function advanceTrip(state)
             saveMainState(state)
 
         elseif state.stage == "out_z" then
+            if not controlCheckpoint(state) then
+                return
+            end
+
             if moveZTo(state, state.destination.z) then
                 return
             end
@@ -1044,6 +1176,10 @@ local function advanceTrip(state)
             saveMainState(state)
 
         elseif state.stage == "out_descend" then
+            if not controlCheckpoint(state) then
+                return
+            end
+
             if moveYTo(state, state.destination.y) then
                 return
             end
@@ -1085,6 +1221,10 @@ local function advanceTrip(state)
             saveMainState(state)
 
         elseif state.stage == "return_climb" then
+            if not controlCheckpoint(state) then
+                return
+            end
+
             if moveYTo(state, state.cruise) then
                 return
             end
@@ -1093,6 +1233,10 @@ local function advanceTrip(state)
             saveMainState(state)
 
         elseif state.stage == "return_x" then
+            if not controlCheckpoint(state) then
+                return
+            end
+
             if moveXTo(state, state.start.x) then
                 return
             end
@@ -1101,6 +1245,10 @@ local function advanceTrip(state)
             saveMainState(state)
 
         elseif state.stage == "return_z" then
+            if not controlCheckpoint(state) then
+                return
+            end
+
             if moveZTo(state, state.start.z) then
                 return
             end
@@ -1109,6 +1257,10 @@ local function advanceTrip(state)
             saveMainState(state)
 
         elseif state.stage == "return_descend" then
+            if not controlCheckpoint(state) then
+                return
+            end
+
             if moveYTo(state, state.start.y) then
                 return
             end
@@ -1321,6 +1473,83 @@ local function slaveStatus(state, token)
     )
 end
 
+local function relayControlToMaster(wirelessSide, message)
+    if type(message) ~= "table" then
+        return
+    end
+
+    local token = tostring(message.token or "")
+
+    if token == "" then
+        return
+    end
+
+    rednet.send(
+        CONTROL_ID,
+        {
+            type = "relay_ack",
+            token = token,
+            release = CAIRN_RELEASE,
+            message = "Drive1 received command"
+        },
+        CONTROL_REPLY_PROTOCOL
+    )
+
+    rednet.send(
+        MASTER_ID,
+        {
+            type = "control_relay",
+            message = message
+        },
+        LINK_PROTOCOL
+    )
+end
+
+local function scanControllerWindow(wirelessSide, duration)
+    if not wirelessSide then
+        sleep(duration)
+        return 0
+    end
+
+    local deadline = os.clock() + duration
+    local received = 0
+
+    while os.clock() < deadline do
+        local remaining = deadline - os.clock()
+        local sender, message = rednet.receive(
+            CONTROL_PROTOCOL,
+            remaining
+        )
+
+        if not sender then
+            break
+        end
+
+        if sender == CONTROL_ID and type(message) == "table" then
+            received = received + 1
+            relayControlToMaster(wirelessSide, message)
+        end
+    end
+
+    return received
+end
+
+local function forwardControlResult(message)
+    if type(message) ~= "table" then
+        return
+    end
+
+    if type(message.payload) ~= "table" then
+        return
+    end
+
+    rednet.send(
+        CONTROL_ID,
+        message.payload,
+        CONTROL_REPLY_PROTOCOL
+    )
+end
+
 local function runSlave()
     clearSlaveOutputs()
 
@@ -1332,6 +1561,12 @@ local function runSlave()
     end
 
     openModem(SLAVE_WIRED_SIDE)
+
+    local wirelessSide = findSlaveWireless()
+
+    if wirelessSide then
+        openModem(wirelessSide)
+    end
 
     local state = loadSlaveState()
 
@@ -1356,10 +1591,20 @@ local function runSlave()
     print("")
     print("Facing: North")
     print("Wired modem: bottom")
+    print("Wireless relay: " .. tostring(wirelessSide or "NOT FOUND"))
     print("")
     print("Left output: Right / West")
     print("Top output: Down")
     print("")
+    print("Scanning controller 2705...")
+
+    scanControllerWindow(
+        wirelessSide,
+        CONTROL_BOOT_SCAN_TIME
+    )
+
+    term.setCursorPos(1, 12)
+    term.clearLine()
     print("Waiting for Drive2 master...")
 
     while true do
@@ -1483,7 +1728,40 @@ local function runSlave()
                     "commit_ack",
                     message.token
                 )
+
+            elseif message.type == "control_window" then
+                term.setCursorPos(1, 12)
+                term.clearLine()
+                print("Checking controller 2705...")
+
+                scanControllerWindow(
+                    wirelessSide,
+                    tonumber(message.duration) or CONTROL_SCAN_TIME
+                )
+
+                slaveReply(
+                    state,
+                    "control_window_done",
+                    message.token
+                )
+
+                term.setCursorPos(1, 12)
+                term.clearLine()
+                print("Waiting for Drive2 master...")
+
+            elseif message.type == "control_result" then
+                forwardControlResult(message)
             end
+
+        elseif
+            sender == CONTROL_ID and
+            protocol == CONTROL_PROTOCOL and
+            type(message) == "table"
+        then
+            relayControlToMaster(
+                wirelessSide,
+                message
+            )
 
         elseif
             sender == MASTER_ID and
@@ -1522,7 +1800,6 @@ local function runMain()
     end
 
     openModem(MASTER_WIRED_SIDE)
-    openModem(MASTER_WIRELESS_SIDE)
 
     local state = loadMainState()
 
@@ -1547,14 +1824,20 @@ local function runMain()
             waitTime = 0.5
         end
 
-        local action = pollControl(state, waitTime)
+        pollControl(state, waitTime)
 
-        if action == "update" then
+        if pendingControlAction == "update" then
+            pendingControlAction = nil
             shell.run("update")
         end
 
         if not state.paused then
             advanceTrip(state)
+        end
+
+        if pendingControlAction == "update" then
+            pendingControlAction = nil
+            shell.run("update")
         end
 
         sleep(0.02)
