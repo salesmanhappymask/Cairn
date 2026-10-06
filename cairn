@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 30
+local CAIRN_RELEASE = 31
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -25,6 +25,7 @@ local SLAVE_WIRED_SIDE = "bottom"
 
 local PULSE_TIME = 0.25
 local MOVE_SETTLE_TIME = 0.25
+local PHYSICAL_MOVE_TIMEOUT = 1.50
 local LINK_TIMEOUT = 0.5
 local LINK_ATTEMPTS = 3
 local MAX_RECOVERY_REBOOTS = 3
@@ -102,7 +103,7 @@ end
 
 local moves = {
     forward = {
-        owner = MASTER_ID,
+        owner = SLAVE_ID,
         side = "back",
         dx = 0,
         dy = 0,
@@ -111,7 +112,7 @@ local moves = {
     },
     back = {
         owner = MASTER_ID,
-        side = "front",
+        side = "back",
         dx = 0,
         dy = 0,
         dz = 1,
@@ -456,6 +457,12 @@ local function drawRoute(state, action)
             print("Controller: Drive1 " .. move.side)
         end
     end
+
+    if state.lastMoveError then
+        print("")
+        print("LAST MOVE FAILED")
+        print(tostring(state.lastMoveError))
+    end
 end
 
 local function queueControl(message)
@@ -588,6 +595,31 @@ local function pulseMain(side)
     sleep(MOVE_SETTLE_TIME)
 end
 
+local function physicalMoveFailed(state, reason)
+    local tx = state.tx
+    local move = tx and moves[tx.direction] or nil
+    local detail =
+        "direction=" .. tostring(tx and tx.direction or "unknown") ..
+        " owner=" .. tostring(move and move.owner or "unknown") ..
+        " side=" .. tostring(move and move.side or "unknown") ..
+        " current=" .. positionText(state.current) ..
+        " reason=" .. tostring(reason)
+
+    logEvent("ERROR", "PHYSICAL_MOVE_FAILED", detail)
+
+    state.lastMoveError = tostring(reason)
+    state.tx = nil
+    state.paused = true
+    saveMainState(state)
+
+    drawRoute(state)
+    print("")
+    print("Position was NOT advanced.")
+    print("Route paused. Fix the drive and Resume.")
+
+    return false
+end
+
 local function commitMove(state)
     local tx = state.tx
 
@@ -611,6 +643,7 @@ local function commitMove(state)
     local direction = tx.direction
 
     state.tx = nil
+    state.lastMoveError = nil
 
     saveMainState(state)
     commitSlave(token)
@@ -801,9 +834,12 @@ local function runTransaction(state)
             )
 
             pulseMain(move.side)
+            sleep(PHYSICAL_MOVE_TIMEOUT)
 
-            tx.phase = "await_peer"
-            saveMainState(state)
+            return physicalMoveFailed(
+                state,
+                "Drive2 remained online after the movement pulse"
+            )
         end
 
         if tx.phase == "local_issued" or tx.phase == "await_peer" then
@@ -815,6 +851,12 @@ local function runTransaction(state)
             tx.phase = "remote_issued"
             saveMainState(state)
             sendSlaveExecute(tx)
+            sleep(PHYSICAL_MOVE_TIMEOUT)
+
+            return physicalMoveFailed(
+                state,
+                "Drive2 remained online after Drive1 executed the movement"
+            )
         end
 
         if tx.phase == "remote_issued" then
@@ -976,6 +1018,7 @@ local function controlStatus(state)
             direction = state.tx.direction,
             phase = state.tx.phase
         } or nil,
+        movementError = state.lastMoveError,
         quarry = state.quarry and {
             phase = state.quarry.phase,
             rmId = state.quarry.rmId,
@@ -1020,6 +1063,7 @@ local function beginOneWay(state, x, y, z, cruise)
     state.paused = false
     state.tx = nil
     state.quarry = nil
+    state.lastMoveError = nil
     saveMainState(state)
     logEvent(
         "INFO",
@@ -1043,6 +1087,7 @@ local function beginQuarry(state, x, y, z, cruise)
     state.routeMode = "quarry"
     state.paused = false
     state.tx = nil
+    state.lastMoveError = nil
     state.quarry = {
         phase = "TRAVEL",
         jobToken =
@@ -1111,6 +1156,7 @@ local function handleControl(state, message)
     elseif command == "resume" then
         if routeActive(state) then
             state.paused = false
+            state.lastMoveError = nil
             reply.ok = true
             reply.message = "Route resumed"
         else
@@ -1126,6 +1172,7 @@ local function handleControl(state, message)
             state.routeMode = "idle"
             state.tx = nil
             state.quarry = nil
+            state.lastMoveError = nil
             reply.ok = true
             reply.message = "Route cancelled"
         end
@@ -1251,6 +1298,7 @@ local function handleControl(state, message)
             state.stage = "idle"
             state.routeMode = "idle"
             state.paused = false
+            state.lastMoveError = nil
 
             reply.ok = true
             reply.message = "Position updated"
@@ -1558,7 +1606,8 @@ local function initializeState()
         lastControlToken = nil,
         lastControlReply = nil,
         quarrySequence = 0,
-        quarry = nil
+        quarry = nil,
+        lastMoveError = nil
     }
 
     saveMainState(state)
@@ -2315,6 +2364,14 @@ local function runSlave()
                     message.token,
                     {
                         state = state,
+                        peripherals = {
+                            front = peripheral.getType("front"),
+                            back = peripheral.getType("back"),
+                            left = peripheral.getType("left"),
+                            right = peripheral.getType("right"),
+                            top = peripheral.getType("top"),
+                            bottom = peripheral.getType("bottom")
+                        },
                         outputs = {
                             front = redstone.getOutput("front"),
                             back = redstone.getOutput("back"),

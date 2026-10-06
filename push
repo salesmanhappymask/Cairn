@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 30
+local CAIRN_RELEASE = 31
 
 local files = {...}
 if #files == 0 then
