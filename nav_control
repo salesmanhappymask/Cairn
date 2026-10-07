@@ -1,16 +1,17 @@
-local CAIRN_RELEASE = 38
+local CAIRN_RELEASE = 39
 
 local CONTROL_ID = 2705
 local SLAVE_ID = 2701
+local MASTER_ID = 2700
 
 local CONTROL_PROTOCOL = "cairn.nav.command"
 local CONTROL_REPLY_PROTOCOL = "cairn.nav.reply"
 local CONFIG_FILE = "nav_control.cfg"
 
-local COMMAND_SENDS = 28
-local COMMAND_INTERVAL = 0.075
-local STATUS_SENDS = 10
-local STATUS_INTERVAL = 0.060
+local COMMAND_SENDS = 20
+local COMMAND_INTERVAL = 0.20
+local STATUS_SENDS = 6
+local STATUS_INTERVAL = 0.25
 
 local SIDES = {
     "top",
@@ -269,7 +270,7 @@ local function draw()
         print(
             "Platform v" ..
             tostring(lastStatus.release or "?") ..
-            "  Relay OK"
+            (lastStatus.replyPath == "direct" and "  Direct OK" or "  Relay OK")
         )
 
         print(
@@ -353,11 +354,11 @@ local function request(payload, label, sends, interval)
             end
 
             if
-                sender == SLAVE_ID and
+                (sender == SLAVE_ID or sender == MASTER_ID) and
                 type(message) == "table" and
                 message.token == token
             then
-                if message.type == "relay_ack" then
+                if message.type == "relay_ack" and sender == SLAVE_ID then
                     relaySeen = true
 
                     setActivity(
@@ -365,7 +366,8 @@ local function request(payload, label, sends, interval)
                         "Relaying to Drive2"
                     )
 
-                else
+                elseif message.type == "status" or message.type == "command_reply" then
+                    message.replyPath = sender == MASTER_ID and "direct" or "relay"
                     logRequest("REPLY", message)
                     setActivity(
                         message.ok == false
@@ -390,7 +392,7 @@ local function request(payload, label, sends, interval)
     else
         setActivity(
             label .. " not received",
-            "No reply from Drive1"
+            "No reply from either drive"
         )
     end
 

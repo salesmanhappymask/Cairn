@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 38
+local CAIRN_RELEASE = 39
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -491,6 +491,16 @@ local function queueQuarry(sender, message)
     }
 end
 
+local function receiveController(sender, message, protocol)
+    if sender ~= CONTROL_ID or protocol ~= CONTROL_PROTOCOL or type(message) ~= "table" then
+        return false
+    end
+    queueControl(message)
+    logEvent("INFO", "CONTROL_RX", "path=direct command=" .. tostring(message.command) ..
+        " token=" .. tostring(message.token))
+    return true
+end
+
 local function waitLinkType(expected, token, timeout)
     local deadline = os.clock() + timeout
 
@@ -502,7 +512,9 @@ local function waitLinkType(expected, token, timeout)
             return nil
         end
 
-        if protocol == QUARRY_PROTOCOL and type(message) == "table" then
+        if receiveController(sender, message, protocol) then
+
+        elseif protocol == QUARRY_PROTOCOL and type(message) == "table" then
             queueQuarry(sender, message)
             logEvent(
                 "INFO",
@@ -1108,6 +1120,9 @@ local function sendControlReply(token, payload)
     payload = payload or {}
     payload.token = token
     payload.release = CAIRN_RELEASE
+    rednet.send(CONTROL_ID, payload, CONTROL_REPLY_PROTOCOL)
+    logEvent("INFO", "CONTROL_TX", "type=" .. tostring(payload.type) ..
+        " token=" .. tostring(token) .. " direct_and_relay=true")
 
     rednet.send(
         SLAVE_ID,
@@ -1611,6 +1626,10 @@ local function receiveControlRelay(timeout)
 
     if not sender then
         return false
+    end
+
+    if receiveController(sender, message, protocol) then
+        return true
     end
 
     if protocol == QUARRY_PROTOCOL and type(message) == "table" then
