@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 39
+local CAIRN_RELEASE = 40
 
 local id = os.getComputerID()
 

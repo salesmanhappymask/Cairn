@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 39
+local CAIRN_RELEASE = 40
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -1070,6 +1070,8 @@ local function quarryCommitted(state)
         return false
     end
 
+    if state.quarry.phase == "ERROR" and state.quarry.safeToCancel == true then return false end
+
     local phase = tostring(state.quarry.phase or "")
 
     return
@@ -1583,6 +1585,7 @@ local function processQuarryQueue(state)
                     state.stage = "quarry_wait"
                 end
 
+                state.quarry.safeToCancel = message.phase == "ERROR" and message.safeToCancel == true
                 state.quarry.error = message.error
                 changed = true
 
@@ -1606,6 +1609,7 @@ local function processQuarryQueue(state)
                     state.quarry.rmId or
                     tonumber(sender)
 
+                state.quarry.safeToCancel = message.safeToCancel == true
                 state.quarry.phase = "ERROR"
                 state.quarry.error =
                     tostring(message.error or "Regional Manager error")
