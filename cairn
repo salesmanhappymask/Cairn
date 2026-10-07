@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 36
+local CAIRN_RELEASE = 37
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -654,10 +654,17 @@ local function commitMove(state)
     end
 
     local before = positionText(state.current)
+    local holdPosition = tx.holdPosition == true
 
-    state.current.x = state.current.x + move.dx
-    state.current.y = state.current.y + move.dy
-    state.current.z = state.current.z + move.dz
+    if not holdPosition then
+        state.current.x = state.current.x + move.dx
+        state.current.y = state.current.y + move.dy
+        state.current.z = state.current.z + move.dz
+    end
+
+    if tx.southEndpointCorrection == true then
+        state.southEndpointCorrectionDone = true
+    end
 
     local token = tx.token
     local direction = tx.direction
@@ -670,12 +677,13 @@ local function commitMove(state)
 
     logEvent(
         "INFO",
-        "MOVE_COMMIT",
+        holdPosition and "MOVE_CORRECTION_COMMIT" or "MOVE_COMMIT",
         "token=" .. tostring(token) ..
         " direction=" .. tostring(direction) ..
         " from=" .. before ..
         " to=" .. positionText(state.current) ..
-        " stage=" .. tostring(state.stage)
+        " stage=" .. tostring(state.stage) ..
+        " holdPosition=" .. tostring(holdPosition)
     )
 
     drawRoute(state)
@@ -888,7 +896,7 @@ local function runTransaction(state)
     return false
 end
 
-local function newMove(state, direction)
+local function newMove(state, direction, options)
     local move = moves[direction]
 
     if not move then
@@ -896,6 +904,7 @@ local function newMove(state, direction)
         return
     end
 
+    options = options or {}
     state.sequence = (state.sequence or 0) + 1
 
     state.tx = {
@@ -908,19 +917,22 @@ local function newMove(state, direction)
         direction = direction,
         owner = move.owner,
         phase = "created",
-        recoveryReboots = 0
+        recoveryReboots = 0,
+        holdPosition = options.holdPosition == true,
+        southEndpointCorrection = options.southEndpointCorrection == true
     }
 
     logEvent(
         "INFO",
-        "MOVE_CREATE",
+        options.southEndpointCorrection == true and "MOVE_CORRECTION_CREATE" or "MOVE_CREATE",
         "token=" .. tostring(state.tx.token) ..
         " direction=" .. tostring(direction) ..
         " owner=" .. tostring(move.owner) ..
         " side=" .. tostring(move.side) ..
         " current=" .. positionText(state.current) ..
         " destination=" .. positionText(state.destination) ..
-        " stage=" .. tostring(state.stage)
+        " stage=" .. tostring(state.stage) ..
+        " holdPosition=" .. tostring(state.tx.holdPosition)
     )
 
     saveMainState(state)
@@ -1126,6 +1138,7 @@ local function beginOneWay(state, x, y, z, cruise)
     state.tx = nil
     state.quarry = nil
     state.lastMoveError = nil
+    state.southEndpointCorrectionDone = false
     saveMainState(state)
     logEvent(
         "INFO",
@@ -1150,6 +1163,7 @@ local function beginQuarry(state, x, y, z, cruise, gridSouthWest)
     state.paused = false
     state.tx = nil
     state.lastMoveError = nil
+    state.southEndpointCorrectionDone = false
 
     local startSouthWest = targetChunkSouthWest(
         state.start,
@@ -1727,6 +1741,26 @@ local function moveZTo(state, target)
         return true
     end
 
+    if
+        state.routeMode == "quarry" and
+        state.stage == "out_z" and
+        state.start and
+        target > state.start.z and
+        state.southEndpointCorrectionDone ~= true
+    then
+        logEvent(
+            "INFO",
+            "SOUTH_ENDPOINT_CORRECTION",
+            "logical=" .. positionText(state.current) ..
+            " targetZ=" .. tostring(target)
+        )
+        newMove(state, "back", {
+            holdPosition = true,
+            southEndpointCorrection = true
+        })
+        return true
+    end
+
     return false
 end
 
@@ -1798,7 +1832,8 @@ local function initializeState()
         quarrySequence = 0,
         quarry = nil,
         gridSouthWest = nil,
-        lastMoveError = nil
+        lastMoveError = nil,
+        southEndpointCorrectionDone = false
     }
 
     saveMainState(state)
