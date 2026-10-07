@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 40
+local CAIRN_RELEASE = 41
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -10,6 +10,8 @@ local UPDATE_PROTOCOL = "cairn.drive.update"
 local CONTROL_PROTOCOL = "cairn.nav.command"
 local CONTROL_REPLY_PROTOCOL = "cairn.nav.reply"
 local QUARRY_PROTOCOL = "cairn.quarry.v2"
+local QUARRY_GEOMETRY_VERSION = 3
+local RANGE_CHANNEL = 65000
 
 local MAIN_STATE_FILE = "cairn_drive_state"
 local SLAVE_STATE_FILE = "cairn_drive1_state"
@@ -480,8 +482,43 @@ local function queueControl(message)
     controlQueue[#controlQueue + 1] = message
 end
 
+local slaveWirelessSide = nil
+
+local function answerRange(message)
+    if type(message) ~= "table" or message.type ~= "range_ping" then
+        return false
+    end
+
+    if tonumber(message.target) ~= os.getComputerID() then
+        return true
+    end
+
+    local side = os.getComputerID() == MASTER_ID and MASTER_WIRELESS_SIDE or slaveWirelessSide
+
+    if side then
+        pcall(
+            peripheral.call,
+            side,
+            "transmit",
+            RANGE_CHANNEL,
+            os.getComputerID(),
+            {
+                type = "range_pong",
+                id = os.getComputerID(),
+                nonce = message.nonce
+            }
+        )
+    end
+
+    return true
+end
+
 local function queueQuarry(sender, message)
     if type(message) ~= "table" then
+        return
+    end
+
+    if answerRange(message) then
         return
     end
 
@@ -816,12 +853,15 @@ local function confirmSlaveMove(state)
 
             if reply.phase == "prepared" then
                 sendSlaveExecute(tx)
+                sleep(PHYSICAL_MOVE_TIMEOUT)
+                return physicalMoveFailed(
+                    state,
+                    "Drive2 remained online after Drive1 re-executed the movement"
+                )
             end
         else
             if pingSlaveOnce() then
-                if prepareSlave(tx) then
-                    sendSlaveExecute(tx)
-                end
+                prepareSlave(tx)
             end
         end
 
@@ -1020,7 +1060,7 @@ local function quarryGeometry(position, quarry)
     local dock = {
         x = position.x,
         y = position.y + 1,
-        z = position.z - 4
+        z = position.z
     }
 
     return {
@@ -1844,7 +1884,7 @@ end
 local function quarryRequest(state, kind)
     local packet = quarryGeometry(state.current, state.quarry)
     packet.type = kind
-    packet.version = 2
+    packet.version = QUARRY_GEOMETRY_VERSION
     packet.jobToken = state.quarry.jobToken
     return packet
 end
@@ -1897,7 +1937,7 @@ local function advanceTrip(state)
         if state.stage == "quarry_wait" then
             sendQuarryWireless({
                 type = "quarry_status_query",
-                version = 2,
+                version = QUARRY_GEOMETRY_VERSION,
                 jobToken = state.quarry.jobToken
             }, state.quarry.rmId)
 
@@ -2277,6 +2317,10 @@ local function forwardControllerReply(message)
 end
 
 local function relayQuarryMessage(sender, message)
+    if answerRange(message) then
+        return
+    end
+
     if type(message) ~= "table" then
         return
     end
@@ -2382,6 +2426,7 @@ local function runSlave()
     openModem(SLAVE_WIRED_SIDE)
 
     local wirelessSide = findSlaveWireless()
+    slaveWirelessSide = wirelessSide
 
     if not wirelessSide then
         drawHardwareError(
@@ -2401,6 +2446,13 @@ local function runSlave()
         state.tx and
         state.tx.executor == SLAVE_ID and
         state.tx.phase == "executing"
+    then
+        state.tx.phase = "prepared"
+        state.tx.recovered = true
+    elseif
+        state.tx and
+        state.tx.executor == SLAVE_ID and
+        state.tx.phase == "pulsing"
     then
         state.tx.phase = "complete"
         state.tx.recovered = true
@@ -2534,6 +2586,8 @@ local function runSlave()
 
                         sleep(0.15)
                         clearSlaveOutputs()
+                        state.tx.phase = "pulsing"
+                        saveSlaveState(state)
                         redstone.setOutput(move.side, true)
                         sleep(PULSE_TIME)
                         redstone.setOutput(move.side, false)
@@ -2558,7 +2612,7 @@ local function runSlave()
                             }
                         )
 
-                    elseif state.tx.phase == "executing" then
+                    elseif state.tx.phase == "executing" or state.tx.phase == "pulsing" then
                         slaveReply(
                             state,
                             "execute_ack",

@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 40
+local CAIRN_RELEASE = 41
 
 local CONTROL_ID = 2705
 local SLAVE_ID = 2701
