@@ -1,6 +1,6 @@
-local RELEASE_VERSION = 37
+local RELEASE_VERSION = 38
 local BASE_URL = "https://raw.githubusercontent.com/salesmanhappymask/Cairn/main/"
-local FILES = {"startup", "nav_control", "nav_update"}
+local FILES = {"startup", "nav_control", "nav_update", "pushlogs", "push"}
 
 local function readAll(path)
     if not fs.exists(path) then

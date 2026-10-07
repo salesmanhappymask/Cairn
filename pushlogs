@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 37
+local CAIRN_RELEASE = 38
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -138,6 +138,7 @@ end
 h.write("root_files=" .. table.concat(entries, ",") .. "\n")
 
 local stateFiles = {
+    "nav_control.cfg",
     "cairn_version",
     ".cairn_version",
     "cairn_drive_state",
@@ -159,6 +160,10 @@ if fs.exists("logs/previous.log") then
 end
 if fs.exists("logs/errors.log") then
     append(h, "logs/errors.log.tail", tail("logs/errors.log", 16384))
+end
+
+for _, path in ipairs({"nav_control.log", "nav_control.log.previous"}) do
+    if fs.exists(path) then append(h, path, tail(path, 32768)) end
 end
 
 local slave, slaveError = querySlave()

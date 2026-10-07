@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 37
+local CAIRN_RELEASE = 38
 
 local MASTER_ID = 2700
 local SLAVE_ID = 2701
@@ -312,7 +312,10 @@ local function findSlaveWireless()
 end
 
 local function saveMainState(state)
-    return writeTable(MAIN_STATE_FILE, state)
+    if not writeTable(MAIN_STATE_FILE, state) then
+        error("Cannot save Cairn movement state; movement stopped")
+    end
+    return true
 end
 
 local function loadMainState()
@@ -386,7 +389,10 @@ local function loadSlaveState()
 end
 
 local function saveSlaveState(state)
-    return writeTable(SLAVE_STATE_FILE, state)
+    if not writeTable(SLAVE_STATE_FILE, state) then
+        error("Cannot save Drive1 movement state; movement stopped")
+    end
+    return true
 end
 
 local function askInteger(label)
@@ -896,7 +902,7 @@ local function runTransaction(state)
     return false
 end
 
-local function newMove(state, direction, options)
+local function newMove(state, direction)
     local move = moves[direction]
 
     if not move then
@@ -904,7 +910,6 @@ local function newMove(state, direction, options)
         return
     end
 
-    options = options or {}
     state.sequence = (state.sequence or 0) + 1
 
     state.tx = {
@@ -917,22 +922,19 @@ local function newMove(state, direction, options)
         direction = direction,
         owner = move.owner,
         phase = "created",
-        recoveryReboots = 0,
-        holdPosition = options.holdPosition == true,
-        southEndpointCorrection = options.southEndpointCorrection == true
+        recoveryReboots = 0
     }
 
     logEvent(
         "INFO",
-        options.southEndpointCorrection == true and "MOVE_CORRECTION_CREATE" or "MOVE_CREATE",
+        "MOVE_CREATE",
         "token=" .. tostring(state.tx.token) ..
         " direction=" .. tostring(direction) ..
         " owner=" .. tostring(move.owner) ..
         " side=" .. tostring(move.side) ..
         " current=" .. positionText(state.current) ..
         " destination=" .. positionText(state.destination) ..
-        " stage=" .. tostring(state.stage) ..
-        " holdPosition=" .. tostring(state.tx.holdPosition)
+        " stage=" .. tostring(state.stage)
     )
 
     saveMainState(state)
@@ -943,7 +945,7 @@ end
 local function integerValue(value)
     local number = tonumber(value)
 
-    if not number or number ~= math.floor(number) then
+    if not number or number ~= number or math.abs(number) == math.huge or number ~= math.floor(number) then
         return nil
     end
 
@@ -965,8 +967,8 @@ end
 local function gridPoint(value)
     return
         type(value) == "table" and
-        type(value.x) == "number" and
-        type(value.z) == "number"
+        type(value.x) == "number" and integerValue(value.x) ~= nil and
+        type(value.z) == "number" and integerValue(value.z) ~= nil
 end
 
 local function targetChunkSouthWest(position, gridSouthWest)
@@ -1052,7 +1054,7 @@ local function quarryGeometry(position, quarry)
 end
 
 local function quarryCommitted(state)
-    if not state.quarry then
+    if not state.quarry or state.routeMode ~= "quarry" then
         return false
     end
 
@@ -1124,7 +1126,7 @@ local function cacheControlReply(state, token, payload)
     saveMainState(state)
 end
 
-local function beginOneWay(state, x, y, z, cruise)
+local function beginRoute(state, x, y, z, cruise, mode)
     state.start = copyPosition(state.current)
     state.destination = {
         x = x,
@@ -1133,12 +1135,15 @@ local function beginOneWay(state, x, y, z, cruise)
     }
     state.cruise = cruise
     state.stage = "out_climb"
-    state.routeMode = "oneway"
+    state.routeMode = mode
     state.paused = false
     state.tx = nil
-    state.quarry = nil
     state.lastMoveError = nil
-    state.southEndpointCorrectionDone = false
+end
+
+local function beginOneWay(state, x, y, z, cruise)
+    beginRoute(state, x, y, z, cruise, "oneway")
+    state.quarry = nil
     saveMainState(state)
     logEvent(
         "INFO",
@@ -1151,19 +1156,7 @@ end
 
 local function beginQuarry(state, x, y, z, cruise, gridSouthWest)
     state.quarrySequence = (tonumber(state.quarrySequence) or 0) + 1
-    state.start = copyPosition(state.current)
-    state.destination = {
-        x = x,
-        y = y,
-        z = z
-    }
-    state.cruise = cruise
-    state.stage = "out_climb"
-    state.routeMode = "quarry"
-    state.paused = false
-    state.tx = nil
-    state.lastMoveError = nil
-    state.southEndpointCorrectionDone = false
+    beginRoute(state, x, y, z, cruise, "quarry")
 
     local startSouthWest = targetChunkSouthWest(
         state.start,
@@ -1223,7 +1216,6 @@ local function handleControl(state, message)
 
     if command == "status" then
         local payload = controlStatus(state)
-        cacheControlReply(state, token, payload)
         sendControlReply(token, payload)
         return
     end
@@ -1278,7 +1270,10 @@ local function handleControl(state, message)
         local z = integerValue(message.z)
         local cruise = integerValue(message.cruise)
 
-        if not x or not y or not z or not cruise then
+        if routeActive(state) or state.tx or quarryCommitted(state) then
+            reply.message = "Finish or cancel the active route first"
+
+        elseif not x or not y or not z or not cruise then
             reply.message = "Coordinates must be whole numbers"
 
         elseif cruise < state.current.y or cruise < y then
@@ -1333,10 +1328,6 @@ local function handleControl(state, message)
                 x = gridX,
                 z = gridZ
             }
-            state.gridSouthWest = {
-                x = gridX,
-                z = gridZ
-            }
         elseif gridPoint(state.gridSouthWest) then
             gridSouthWest = {
                 x = state.gridSouthWest.x,
@@ -1360,6 +1351,7 @@ local function handleControl(state, message)
                 cruise = minimumCruise
             end
 
+            state.gridSouthWest = {x = gridSouthWest.x, z = gridSouthWest.z}
             beginQuarry(
                 state,
                 x,
@@ -1537,12 +1529,15 @@ local function processQuarryQueue(state)
         if
             state.quarry and
             type(message) == "table" and
+            tonumber(sender) ~= nil and
+            (not state.quarry.rmId or tonumber(sender) == state.quarry.rmId) and
+            (message.rmId == nil or tonumber(message.rmId) == tonumber(sender)) and
             tostring(message.jobToken or "") ==
                 tostring(state.quarry.jobToken or "")
         then
             local kind = tostring(message.type or "")
 
-            if kind == "quarry_ready" then
+            if kind == "quarry_ready" and state.stage == "quarry_contact" then
                 state.quarry.rmId =
                     tonumber(message.rmId) or
                     tonumber(sender)
@@ -1551,7 +1546,7 @@ local function processQuarryQueue(state)
                 state.stage = "quarry_launch"
                 changed = true
 
-            elseif kind == "quarry_launch_ack" then
+            elseif kind == "quarry_launch_ack" and state.stage == "quarry_launch" then
                 state.quarry.rmId =
                     tonumber(message.rmId) or
                     state.quarry.rmId or
@@ -1561,21 +1556,22 @@ local function processQuarryQueue(state)
                 state.stage = "quarry_wait"
                 changed = true
 
-            elseif kind == "quarry_status" then
+            elseif kind == "quarry_status" and
+                (state.stage == "quarry_wait" or state.stage == "quarry_launch") then
                 state.quarry.rmId =
                     tonumber(message.rmId) or
                     state.quarry.rmId or
                     tonumber(sender)
 
-                if message.phase then
-                    state.quarry.phase =
-                        tostring(message.phase)
+                if message.phase and message.phase ~= "READY" and message.phase ~= "CONTACT" and message.phase ~= "TRAVEL" then
+                    state.quarry.phase = tostring(message.phase)
+                    state.stage = "quarry_wait"
                 end
 
                 state.quarry.error = message.error
                 changed = true
 
-            elseif kind == "quarry_complete" then
+            elseif kind == "quarry_complete" and state.stage == "quarry_wait" then
                 state.quarry.rmId =
                     tonumber(message.rmId) or
                     state.quarry.rmId or
@@ -1588,7 +1584,8 @@ local function processQuarryQueue(state)
                 state.paused = false
                 changed = true
 
-            elseif kind == "quarry_error" then
+            elseif kind == "quarry_error" and
+                (state.stage == "quarry_contact" or state.stage == "quarry_launch" or state.stage == "quarry_wait") then
                 state.quarry.rmId =
                     tonumber(message.rmId) or
                     state.quarry.rmId or
@@ -1741,26 +1738,6 @@ local function moveZTo(state, target)
         return true
     end
 
-    if
-        state.routeMode == "quarry" and
-        state.stage == "out_z" and
-        state.start and
-        target > state.start.z and
-        state.southEndpointCorrectionDone ~= true
-    then
-        logEvent(
-            "INFO",
-            "SOUTH_ENDPOINT_CORRECTION",
-            "logical=" .. positionText(state.current) ..
-            " targetZ=" .. tostring(target)
-        )
-        newMove(state, "back", {
-            holdPosition = true,
-            southEndpointCorrection = true
-        })
-        return true
-    end
-
     return false
 end
 
@@ -1841,6 +1818,14 @@ local function initializeState()
     return state
 end
 
+local function quarryRequest(state, kind)
+    local packet = quarryGeometry(state.current, state.quarry)
+    packet.type = kind
+    packet.version = 2
+    packet.jobToken = state.quarry.jobToken
+    return packet
+end
+
 local function advanceTrip(state)
     if state.tx then
         runTransaction(state)
@@ -1859,23 +1844,7 @@ local function advanceTrip(state)
         end
 
         if state.stage == "quarry_contact" then
-            local geometry = quarryGeometry(state.current, state.quarry)
-
-            sendQuarryWireless({
-                type = "quarry_prepare",
-                version = 2,
-                jobToken = state.quarry.jobToken,
-                cairn = geometry.cairn,
-                drive1 = geometry.drive1,
-                dock = geometry.dock,
-                clear = geometry.clear,
-                seed = geometry.seed,
-                idle = geometry.idle,
-                routeStart = geometry.routeStart,
-                gridSouthWest = geometry.gridSouthWest,
-                worldOrigin = geometry.worldOrigin,
-                chunk = geometry.chunk
-            })
+            sendQuarryWireless(quarryRequest(state, "quarry_prepare"))
 
             waitLinkType(
                 "__quarry_wait__",
@@ -1888,23 +1857,9 @@ local function advanceTrip(state)
         end
 
         if state.stage == "quarry_launch" then
-            local geometry = quarryGeometry(state.current, state.quarry)
-
-            sendQuarryWireless({
-                type = "quarry_launch",
-                version = 2,
-                jobToken = state.quarry.jobToken,
-                cairn = geometry.cairn,
-                drive1 = geometry.drive1,
-                dock = geometry.dock,
-                clear = geometry.clear,
-                seed = geometry.seed,
-                idle = geometry.idle,
-                routeStart = geometry.routeStart,
-                gridSouthWest = geometry.gridSouthWest,
-                worldOrigin = geometry.worldOrigin,
-                chunk = geometry.chunk
-            }, state.quarry.rmId)
+            state.quarry.phase = "LAUNCHING"
+            saveMainState(state)
+            sendQuarryWireless(quarryRequest(state, "quarry_launch"), state.quarry.rmId)
 
             waitLinkType(
                 "__quarry_wait__",

@@ -1,4 +1,4 @@
-local CAIRN_RELEASE = 37
+local CAIRN_RELEASE = 38
 
 local CONTROL_ID = 2705
 local SLAVE_ID = 2701
@@ -21,7 +21,6 @@ local SIDES = {
     "back"
 }
 
-local sequence = 0
 local activity = "Ready"
 local detail = ""
 local lastStatus = nil
@@ -129,14 +128,24 @@ local function openWireless()
     return side
 end
 
-local function nextToken()
-    sequence = sequence + 1
+local function logRequest(event, value)
+    local path = "nav_control.log"
+    if fs.exists(path) and fs.getSize(path) >= 32768 then
+        if fs.exists(path .. ".previous") then fs.delete(path .. ".previous") end
+        fs.move(path, path .. ".previous")
+    end
+    local h = fs.open(path, "a")
+    if h then
+        local body = textutils.serialize(value):gsub("[\r\n]+", " ")
+        h.writeLine(tostring(os.clock()) .. " " .. event .. " " .. body)
+        h.close()
+    end
+end
 
-    return
-        tostring(CONTROL_ID) ..
-        ":" ..
-        tostring(sequence) ..
-        ":" ..
+local function nextToken()
+    config.sequence = (tonumber(config.sequence) or 0) + 1
+    if not writeConfig(config) then error("Cannot save controller request sequence") end
+    return tostring(CONTROL_ID) .. ":" .. tostring(config.sequence) .. ":" ..
         tostring(math.floor(os.clock() * 1000))
 end
 
@@ -316,6 +325,7 @@ local function request(payload, label, sends, interval)
     local token = nextToken()
 
     payload.token = token
+    logRequest("REQUEST", payload)
 
     local relaySeen = false
 
@@ -356,6 +366,7 @@ local function request(payload, label, sends, interval)
                     )
 
                 else
+                    logRequest("REPLY", message)
                     setActivity(
                         message.ok == false
                             and "Command rejected"
@@ -368,6 +379,8 @@ local function request(payload, label, sends, interval)
             end
         end
     end
+
+    logRequest("TIMEOUT", {token = token, command = payload.command, relaySeen = relaySeen})
 
     if relaySeen then
         setActivity(
@@ -421,7 +434,7 @@ local function askInteger(label)
         local raw = read()
         local value = tonumber(raw)
 
-        if value and value == math.floor(value) then
+        if value and math.abs(value) ~= math.huge and value == math.floor(value) then
             return value
         end
 
@@ -478,6 +491,7 @@ local function quarry()
         type(config.gridSouthWest.x) ~= "number" or
         type(config.gridSouthWest.z) ~= "number"
     then
+        logRequest("LOCAL_REJECT", {command = "quarry", reason = "Chunk grid unset"})
         print("Set CHUNK GRID before starting Quarry.")
         print("Press Enter to return.")
         read()
@@ -792,6 +806,8 @@ local function handle(id)
         if status and status.type == "status" then
             lastStatus = status
         end
+        setActivity(reply.ok == false and "Command rejected" or "Command acknowledged",
+            reply.message or "Drive2 replied")
     end
 
     draw()
